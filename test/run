@@ -19,10 +19,10 @@ wait_for() { local i; for ((i=0; i<$1*2; i++)); do eval "$2" && return 0; sleep 
 cat > "$T/bin/ssh" <<SH
 #!/usr/bin/env bash
 while [ \$# -gt 0 ]; do case \$1 in -o|-i|-p|-l) shift 2 ;; -*) shift ;; *) break ;; esac; done
-shift; SSH_ORIGINAL_COMMAND="\$*" exec "$ROOT/hub/sat-ssh-gate"
+shift; SSH_ORIGINAL_COMMAND="\$*" exec "$ROOT/hub/sat-ssh-gate" "\${AS:-testnode}"
 SH
 chmod 755 "$T/bin/ssh"
-gate() { SSH_ORIGINAL_COMMAND="$*" "$ROOT/hub/sat-ssh-gate"; }
+gate() { SSH_ORIGINAL_COMMAND="$*" "$ROOT/hub/sat-ssh-gate" "${AS-nodeA}"; }   # as node AS
 export ROOT; export -f gate
 
 git init -q --bare "$T/repo.git"; install -m 755 "$ROOT/hub/pre-receive" "$T/repo.git/hooks/pre-receive"
@@ -45,6 +45,8 @@ gate "sat-hub hello status; touch $T/pwned" >/dev/null 2>&1
 check "runs no shell on sat-hub arguments" test ! -e "$T/pwned"
 check "logs refusals" grep -q refused "$SAT_CONF/gate.log"
 check "lets sat-hub through" gate "sat-hub hello status"
+check "refuses a key with no node name" bash -c '! AS="" gate "sat-hub hello status"'
+check "a key can't act as another node" bash -c '! gate "sat-hub hello claim nodeB 1"'
 
 echo "== push guard"
 git init -q "$T/work"; git -C "$T/work" -c user.name=t -c user.email=t@t commit -q --allow-empty -m x
@@ -57,9 +59,9 @@ echo "== leases"
 q=$HELLO_DIR/queue; mkdir -p "$q"
 echo 5 > "$q/lease1"
 check "claim" test "$(gate sat-hub hello claim nodeA 1)" = lease1
-check "another node cannot renew it" bash -c '! gate sat-hub hello renew nodeB lease1'
+check "another node cannot renew it" bash -c '! AS=nodeB gate sat-hub hello renew nodeB lease1'
 check "the owner can renew it" gate sat-hub hello renew nodeA lease1
-check "another node cannot report it" bash -c '! gate sat-hub hello ok nodeB lease1 x'
+check "another node cannot report it" bash -c '! AS=nodeB gate sat-hub hello ok nodeB lease1 x'
 touch -d '-11 minutes' "$SAT_CONF/leases/hello/lease1"; "$ROOT/hub/sat-hub" --reap
 check "a silent lease is reaped back to the queue" test -f "$q/lease1"
 check "and the old owner learns it is gone" bash -c '[ "$(gate sat-hub hello renew nodeA lease1; echo $?)" = 3 ]'

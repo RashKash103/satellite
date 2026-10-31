@@ -82,5 +82,6 @@ keeps its own records.
 
 ## Removing a node
 
-Delete its line from `~/.ssh/authorized_keys` (the key comment is `sat@NODE-HOSTNAME`). Any job it
+Delete its line from `~/.ssh/authorized_keys` (it ends in `sat@NODE`, and its command is
+`sat-ssh-gate NODE`). Any job it
 held goes back when its lease runs out.

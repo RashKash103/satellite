@@ -19,8 +19,10 @@ and then only after showing every command and the exact apt changes. apt runs wi
 ## What a node key can do on the hub
 
 `sat-setup` adds the node's key to the hub's `authorized_keys` with
-`command="…/sat-ssh-gate",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty`. Whatever
-the node asks to run, sshd runs the gate instead, which allows only:
+`command="…/sat-ssh-gate NODE",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty`.
+Whatever the node asks to run, sshd runs the gate instead. NODE is the node's name, bound to its key:
+the key can claim, renew and report jobs only as that node, and a key line without a name is
+refused outright. The gate allows only:
 
 - `git-upload-pack` of a repository listed in some project's `GIT_REPOS`;
 - `git-receive-pack` of such a repository, if its project has a `PUSH_PREFIX`; `hub/pre-receive`

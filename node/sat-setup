@@ -12,7 +12,8 @@
 set -euo pipefail
 INSTALL=; [ "${1:-}" = --install ] && { INSTALL=1; shift; }
 HUB_IP=${1:?usage: sat-setup [--install] HUB_IP PROJECT [HUB_USER]}; PROJ=${2:?project}; HUB_USER=${3:-$USER}
-KEY=$HOME/.ssh/sat_ed25519 ALIAS=sat-hub-$HUB_IP
+KEY=$HOME/.ssh/sat_ed25519 ALIAS=sat-hub-$HUB_IP NAME=$(hostname -s)
+[[ "$NAME" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "this hostname ($NAME) can't be a node name: letters, digits, . _ - only"; exit 1; }
 B=$HOME/sat/$PROJ
 say() { printf '\n== %s\n' "$*"; }
 
@@ -26,16 +27,19 @@ if ! grep -q "^Host $ALIAS\$" ~/.ssh/config 2>/dev/null; then
 fi
 if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "$ALIAS" sat-hub "$PROJ" status >/dev/null 2>&1; then
   # Through your own key login to the hub (key only: password logins are never tried). The hub
-  # builds the line itself, so its forced command is its own path to sat-ssh-gate.
-  echo "Adding the node key to the hub's authorized_keys, through your key login as $HUB_USER@$HUB_IP."
+  # builds the line itself, so its forced command is its own path to sat-ssh-gate; the node's name is
+  # bound to the key there. An older line for the same key is replaced.
+  echo "Adding the node key to the hub's authorized_keys as node $NAME, through your key login as $HUB_USER@$HUB_IP."
   ssh -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ConnectTimeout=10 "$HUB_USER@$HUB_IP" \
-    'g=$HOME/.local/bin/sat-ssh-gate; [ -x "$g" ] || { echo "the hub has no $g: run hub/install in its satellite checkout" >&2; exit 3; }
-     read -r k; mkdir -p ~/.ssh && chmod 700 ~/.ssh
-     echo "command=\"$g\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty $k" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys' \
+    "n=$NAME; "'g=$HOME/.local/bin/sat-ssh-gate; [ -x "$g" ] || { echo "the hub has no $g: run hub/install in its satellite checkout" >&2; exit 3; }
+     read -r k; kb=$(echo "$k" | cut -d" " -f2); a=$HOME/.ssh/authorized_keys
+     case "$kb" in AAAA?*) ;; *) echo "not a public key: $k" >&2; exit 4 ;; esac   # never filter on an empty key
+     mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch "$a" && { grep -vF "$kb" "$a"; echo "command=\"$g $n\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty $k"; } > "$a.sat-new" \
+       && chmod 600 "$a.sat-new" && mv "$a.sat-new" "$a"' \
     < "$KEY.pub" || {
       echo "Could not log in to $HUB_USER@$HUB_IP with a key. Either set up key login first (docs/node.md), or"
       echo "add this line to ~/.ssh/authorized_keys on the hub yourself, then rerun:"
-      echo "command=\"/home/$HUB_USER/.local/bin/sat-ssh-gate\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty $(cat "$KEY.pub")"
+      echo "command=\"/home/$HUB_USER/.local/bin/sat-ssh-gate $NAME\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty $(cat "$KEY.pub")"
       exit 1; }
   ssh -o BatchMode=yes "$ALIAS" sat-hub "$PROJ" status >/dev/null || { echo "the hub refuses (is $PROJ set up there?)"; exit 1; }
 fi
@@ -49,7 +53,8 @@ install -m 755 "$t/sat" "$HOME/.local/bin/sat"; install -m 644 "$t/sat@.service"
 ssh -o BatchMode=yes "$ALIAS" sat-hub "$PROJ" bundle | tar -C "$B/bundle" -xzf -
 if [ ! -f "$B/config" ]; then
   { echo "# $PROJ on this node (read at each start and by each job)."
-    echo "HUB=$ALIAS"; echo "HUB_IP=$HUB_IP"; echo "HUB_USER=$HUB_USER"; echo "SAT_NAME=$(hostname -s)"
+    echo "HUB=$ALIAS"; echo "HUB_IP=$HUB_IP"; echo "HUB_USER=$HUB_USER"
+    echo "SAT_NAME=$NAME   # bound to this node's key on the hub: change it there too"
     [ -f "$B/bundle/sat/defaults" ] && cat "$B/bundle/sat/defaults" || echo "SLOTS=1"; } > "$B/config"
 fi
 command -v systemctl >/dev/null && systemctl --user daemon-reload 2>/dev/null || true

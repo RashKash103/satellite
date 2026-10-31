@@ -95,6 +95,7 @@ cat ~/.local/share/sat-hello/done/job1                  # on the hub
 | [Writing a project](docs/projects.md) | the hooks contract, the bundle, the job environment, a walkthrough of `examples/hello` |
 | [Security](docs/security.md) | what a node key can and can't do, and what you are trusting |
 | [Testing](docs/testing.md) | the end-to-end test, and testing your own project without a second machine |
+| [Roadmap](ROADMAP.md) | the Go port: a live view, one binary, updates, uninstall |
 
 ## Requirements
 

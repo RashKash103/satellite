@@ -10,7 +10,8 @@ It runs a hub and a node on one machine, in a scratch directory, without sshd: a
 `PATH` drops ssh's options and host and hands the rest to the real `sat-ssh-gate` as
 `SSH_ORIGINAL_COMMAND`, which is what sshd does for a node key. It checks:
 
-- the gate's refusals, and that it runs no shell on what it is sent;
+- the gate's refusals, that it runs no shell on what it is sent, and that a key acts only as its
+  own node;
 - the push guard: pushes under the prefix pass, others are refused;
 - leases: only the owner can renew or report a job, and a silent lease is reaped back;
 - a node agent running `examples/hello` with two lanes: a job that passes, one that fails, one

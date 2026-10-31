@@ -28,7 +28,8 @@ bash ~/sat-setup HUB_IP PROJECT [HUB_USER]
 It is safe to rerun, and **it installs no software**. It:
 
 1. makes `~/.ssh/sat_ed25519` and an SSH alias `sat-hub-HUB_IP` for it;
-2. adds that key to the hub's `authorized_keys` behind `sat-ssh-gate`, using your own key login;
+2. adds that key to the hub's `authorized_keys` behind `sat-ssh-gate`, bound to this node's name
+   (the short hostname), using your own key login; a rerun replaces the line instead of adding one;
 3. installs `sat-agent` and `sat-call` in `~/sat/bin`, the `sat` command in `~/.local/bin`, and
    the `sat@.service` user unit;
 4. fetches the project's bundle and writes `~/sat/PROJECT/config` (adding the bundle's
@@ -75,7 +76,7 @@ avoids throwing away work in progress.
 |---|---|
 | `HUB` | the SSH alias for the hub (written by `sat-setup`) |
 | `HUB_IP`, `HUB_USER` | where the hub is |
-| `SAT_NAME` | this node's name in leases and results (default: the short hostname) |
+| `SAT_NAME` | this node's name in leases and results: the short hostname. It is bound to the node's key on the hub, so change it in both places, or rerun `sat-setup` after renaming the machine. |
 | `SLOTS` | lanes: jobs run at the same time (default 1; the project's defaults may set it) |
 
 Projects may add their own keys (through `sat/defaults`) for their jobs to read.

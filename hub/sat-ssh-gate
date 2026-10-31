@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # sat-ssh-gate: forced command for node keys in ~/.ssh/authorized_keys:
-#   command="<this file>",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 ...
+#   command="<this file> NODE",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 ...
+# NODE is the node name bound to the key: sat-hub lets that key act only as NODE (SAT_NODE).
 # Lets through only what the project files under ~/.config/sat/projects/ allow:
 #   fetching GIT_REPOS, pushing to them under PUSH_PREFIX (checked by hub/pre-receive), copying
 #   RSYNC_DIRS out, and sat-hub. Everything else is refused and logged.
@@ -8,6 +9,10 @@ CONF=${SAT_CONF:-$HOME/.config/sat}
 HERE=$(dirname "$(readlink -f "$0")")
 c=$SSH_ORIGINAL_COMMAND
 log() { mkdir -p "$CONF"; echo "$(date '+%m-%d %H:%M:%S') $*" >> "$CONF/gate.log"; }
+if ! [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  log "refused (key not bound to a node name): $c"; echo "refused: this key has no node name (rerun sat-setup)" >&2; exit 1
+fi
+export SAT_NODE=$1
 repos=() prefix=() dirs=()
 for f in "$CONF"/projects/*; do
   [ -f "$f" ] || continue
@@ -32,4 +37,4 @@ if [[ "$c" =~ ^rsync\ --server\ --sender\ [-A-Za-z0-9.=,\ ]*\ \.\ (/[A-Za-z0-9._
   want=${BASH_REMATCH[1]%/}
   for d in "${dirs[@]}"; do [ "$want" = "$d" ] && { read -ra a <<< "$c"; exec "${a[@]}"; }; done
 fi
-log "refused: $c"; echo "refused" >&2; exit 1
+log "refused ($SAT_NODE): $c"; echo "refused" >&2; exit 1
