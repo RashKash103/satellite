@@ -160,3 +160,12 @@ The hub runs from its checkout: `~/.local/bin` links into it. A `git pull`, or a
 deployed the moment it lands. Keep hub changes backward compatible with the nodes already
 connected. When a change needs data in place first (a key line that must carry a node name before
 the gate requires one), put the data in place before deploying the code.
+
+**New kinds of job: the bundle first, then the hooks.** When `claim` starts handing out a new kind
+of job (a prefix the job script dispatches on), a node with the old bundle runs it as the old kind,
+fails, and hands it back, again and again. Deploy the bundle files, wait for the nodes to fetch them
+(the agent checks every 5 minutes), and only then deploy the hooks that hand out the new jobs.
+
+**One lane, several kinds of job.** Rather than a second project competing for the same machine
+(and the same agent quota), a project's `claim` can hand out more than one kind of job, ID prefixed
+by kind, short ones first. Lane views that find a job's files by its ID must handle every kind.
