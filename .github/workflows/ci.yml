@@ -8,6 +8,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck
-        run: shellcheck -S warning hub/install hub/sat-hub hub/sat-ssh-gate hub/sat-reaper hub/pre-receive node/sat node/sat-agent node/sat-call node/sat-setup node/sat-lib examples/hello/hub-hooks examples/hello/bundle/sat/job examples/hello/bundle/sat/selftest examples/hello/bundle/sat/requirements test/run
+        run: shellcheck -S warning hub/install hub/sat-hub hub/sat-ssh-gate hub/sat-reaper hub/pre-receive node/sat node/sat-agent node/sat-call node/sat-setup node/sat-lib examples/hello/hub-hooks examples/hello/bundle/sat/job examples/hello/bundle/sat/selftest examples/hello/bundle/sat/requirements examples/hello/bundle/sat/ready examples/hello/bundle/sat/clean test/run
       - name: end-to-end
         run: test/run

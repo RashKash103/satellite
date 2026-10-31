@@ -32,6 +32,7 @@ _release)   # ExecStop: hand back whatever is in progress before systemd stops t
 status)
   echo "$P: $(systemctl --user is-active "$U") (autostart: $(systemctl --user is-enabled "$U" 2>/dev/null))$([ -e "$ST/drain" ] && echo ', draining')"
   echo "hub $HUB: $(sat-call status >/dev/null 2>&1 && echo reachable || echo UNREACHABLE)"
+  echo "disk: $(sat_disk_why size)$(sat_disk_ok || echo '  (not taking work: low on room)')"
   for f in "$ST"/slot*.claim; do [ -s "$f" ] && echo "lane $(basename "$f" .claim | tr -dc 0-9): $(cat "$f")"; done
   journalctl --user -u "$U" -n 8 --no-pager -o cat 2>/dev/null ;;
 logs) journalctl --user -u "$U" -f -o cat ;;

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# sat/ready: run before each claim; non-zero means "not now". hello waits while ~/sat/hello/state/hold exists.
+[ ! -e "$SAT_BASE/state/hold" ]

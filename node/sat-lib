@@ -87,3 +87,28 @@ sat_check() {
   echo "\`sat $2 install\` to see the exact steps and confirm them:"
   echo; sat_show "$plan"; return 1
 }
+
+# Disk. A node keeps the larger of MIN_FREE_GB (default 20) and MIN_FREE_PCT (default 10) percent of
+# the filesystem under SAT_BASE free, and MAX_GB (default 0: no cap) caps the project's directory.
+# sat_disk: "AVAIL NEED USED" in KiB (USED: the project's size, measured at most every 30 min).
+sat_disk() {
+  local used=0 c=$SAT_BASE/state/du
+  if [ "${MAX_GB:-0}" -gt 0 ] || [ "${1:-}" = size ]; then
+    [ -n "$(find "$c" -mmin -30 2>/dev/null)" ] || { nice ionice -c3 du -sk "$SAT_BASE" 2>/dev/null | cut -f1 > "$c.new" && mv "$c.new" "$c"; }
+    used=$(cat "$c" 2>/dev/null || echo 0)
+  fi
+  df -Pk "$SAT_BASE" | awk -v g="${MIN_FREE_GB:-20}" -v p="${MIN_FREE_PCT:-10}" -v u="$used" \
+    'NR==2 { n = g * 1048576; q = $2 * p / 100; if (q > n) n = q; printf "%d %d %d\n", $4, n, u }'
+}
+# sat_disk_ok [DIV]: room to take work (DIV 2: the floor for stopping running work, half of it).
+sat_disk_ok() {
+  local avail need used; read -r avail need used <<< "$(sat_disk)"
+  [ "$avail" -ge $((need / ${1:-1})) ] || return 1
+  [ "${1:-1}" != 1 ] || [ "${MAX_GB:-0}" -le 0 ] || [ "$used" -le $((MAX_GB * 1048576)) ]
+}
+sat_disk_why() {
+  local avail need used; read -r avail need used <<< "$(sat_disk "${1:-}")"
+  printf '%d GB free (keeps %d GB free)' $((avail / 1048576)) $((need / 1048576))
+  [ "$used" -gt 0 ] && printf ', project %d GB%s' $((used / 1048576)) "$([ "${MAX_GB:-0}" -gt 0 ] && echo " of $MAX_GB GB")"
+  echo
+}
