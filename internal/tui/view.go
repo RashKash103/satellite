@@ -12,6 +12,7 @@ import (
 	"github.com/RashKash103/satellite/internal/agent"
 	"github.com/RashKash103/satellite/internal/conf"
 	"github.com/RashKash103/satellite/internal/ui"
+	"github.com/RashKash103/satellite/internal/view"
 )
 
 type styles struct {
@@ -114,9 +115,23 @@ func (m *model) projectRows(t styles, w int) []string {
 			tags += " " + t.bad.Render("hub!")
 		}
 		name := p.p.Name
+		alert := lipgloss.NewStyle()
+		switch agent.Worst(p.alerts) {
+		case agent.Error:
+			alert = t.bad.Bold(true)
+		case agent.Warn:
+			alert = t.warn.Bold(true)
+		}
+		badge := ""
+		if n := len(p.alerts); n > 0 && agent.Worst(p.alerts) != agent.Info {
+			badge = " " + alert.Render(fmt.Sprintf("!%d", n))
+		}
 		if i == m.sel[paneProjects] {
 			name = m.selName(t, name, paneProjects)
+		} else {
+			name = alert.Render(name)
 		}
+		name += badge
 		r = append(r, ui.Truncate(m.dot(t, p.active)+" "+name+"  "+st+tags, w))
 	}
 	if len(m.ps) == 0 {
@@ -157,10 +172,13 @@ func (m *model) laneText(p *proj, slot, w int) string {
 	}
 	s := t.bold.Render(l.ID) + " " + Dur(time.Since(l.Started))
 	if l.Percent >= 0 {
-		if n := w - ui.Width(s) - 6; n >= 6 {
+		if n := w - ui.Width(s) - 7; n >= 6 {
 			s += " " + bar(t, l.Percent, min(n, 14))
 		}
 		s += fmt.Sprintf(" %3d%%", l.Percent)
+	}
+	if room := w - ui.Width(s) - 1; l.Progress != "" && room >= 4 {
+		s += " " + t.muted.Render(ui.Truncate(l.Progress, room))
 	}
 	return s
 }
@@ -226,7 +244,78 @@ func (m *model) detailRows(t styles, w int) []string {
 		r = append(r, kv("", t.muted.Render("project "+ui.Bytes(d.Used))))
 	}
 	r = append(r, kv("files", t.muted.Render(tilde(p.p.Base))))
+	if len(p.alerts) > 0 {
+		r = append(r, kv("alerts", alertWord(t, p.alerts)+t.muted.Render(" · ! lists them")))
+	}
 	return r
+}
+
+func alertWord(t styles, as []agent.Alert) string {
+	s := ui.Plural(len(as), "alert", "alerts")
+	switch agent.Worst(as) {
+	case agent.Error:
+		return t.bad.Render(s)
+	case agent.Warn:
+		return t.warn.Render(s)
+	}
+	return t.muted.Render(s)
+}
+
+// nodeRows: this machine's CPU, memory and load, and each project's disk room.
+func (m *model) nodeRows(t styles, w, ch int) []string {
+	n := m.node
+	r := []string{t.head.Render("Node") + t.muted.Render(" "+conf.ShortHost())}
+	sw := min(max(w-6-12, 6), 60)
+	line := func(k string, vs []float64, top float64, val string) {
+		for i, l := range view.SparkH(m.st, vs, sw, ch, top) {
+			if i == 0 {
+				r = append(r, ui.Truncate(t.muted.Render(ui.Pad(k, 6))+l+" "+val, w))
+			} else {
+				r = append(r, ui.Truncate(ui.Pad("", 6)+l, w))
+			}
+		}
+	}
+	if v, ok := last(n.cpu); ok {
+		line("cpu", n.cpu, 100, fmt.Sprintf("%3.0f%%", v))
+	} else {
+		r = append(r, t.muted.Render(ui.Pad("cpu", 6)+"measuring…"))
+	}
+	if v, ok := last(n.mem); ok {
+		line("mem", n.mem, 100, fmt.Sprintf("%3.0f%%", v))
+	}
+	if v, ok := last(n.load); ok {
+		line("load", n.load, float64(n.cpus), view.Num(v)+t.muted.Render(fmt.Sprintf(" of %d", n.cpus)))
+	}
+	for _, p := range m.ps {
+		r = append(r, ui.Truncate(t.muted.Render(ui.Pad(ui.Truncate(p.p.Name, 10), 11))+diskGauge(m, t, p.disk, min(max(w-34, 6), 30)), w))
+	}
+	return r
+}
+
+// diskGauge: free space against the disk's size, the floor marked │; held back below it.
+func diskGauge(m *model, t styles, d agent.Disk, n int) string {
+	if d.Size <= 0 {
+		return t.muted.Render("disk not measured")
+	}
+	free := float64(d.Avail) / float64(d.Size)
+	floor := min(int(float64(n)*float64(d.Need)/float64(d.Size)), n-1)
+	f := min(int(free*float64(n)), n)
+	fill := t.bar
+	if !d.OK(1) {
+		fill = t.warn
+	}
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		switch {
+		case i == floor && d.Need > 0:
+			b.WriteString(t.warn.Render("│"))
+		case i < f:
+			b.WriteString(fill.Render("█"))
+		default:
+			b.WriteString(t.muted.Render("░"))
+		}
+	}
+	return b.String() + fmt.Sprintf(" %d GB free", d.Avail>>30) + t.muted.Render(fmt.Sprintf(" · floor %d", d.Need>>30))
 }
 
 func tilde(p string) string {
@@ -237,11 +326,15 @@ func tilde(p string) string {
 }
 
 // mainLines: the right pane's content, filtered, with its title and note.
-func (m *model) mainLines(t styles) (title string, lines []string, note string) {
+func (m *model) mainLines(t styles, w int) (title string, lines []string, note string) {
+	list := m.tabList()
 	var tl []string
-	for i := tab(0); i < tabs; i++ {
-		n := tabNames[i]
-		if i == m.tab {
+	for i, e := range list {
+		n := e.name
+		if e.v != nil {
+			n = "◆ " + n
+		}
+		if tab(i) == m.tab {
 			n = t.head.Render(n)
 		} else {
 			n = t.muted.Render(n)
@@ -249,8 +342,18 @@ func (m *model) mainLines(t styles) (title string, lines []string, note string) 
 		tl = append(tl, n)
 	}
 	title = strings.Join(tl, t.muted.Render(" │ "))
+	if ui.Width(title) > w-4 { // too many to show: the current one, and where it is
+		title = t.head.Render(list[m.tab].name) + t.muted.Render(fmt.Sprintf(" (%d of %d) [ ]", m.tab+1, len(list)))
+	}
 	p := m.cur()
+	if e := m.curTab(); e.v != nil {
+		lines, note = m.viewLines(t, w)
+		return title, m.filtered(lines, &note), note
+	}
 	switch m.tab {
+	case tabAlerts:
+		lines = m.alertLines(t)
+		note = "every project's alerts · docs/node.md#alerts"
 	case tabLog:
 		if p == nil {
 			break
@@ -291,17 +394,90 @@ func (m *model) mainLines(t styles) (title string, lines []string, note string) 
 			note = m.job.title + ": done"
 		}
 	}
-	if f := strings.ToLower(m.filter[paneMain]); f != "" {
-		var keep []string
-		for _, l := range lines {
-			if strings.Contains(strings.ToLower(ui.Strip(l)), f) {
-				keep = append(keep, l)
+	return title, m.filtered(lines, &note), note
+}
+
+func (m *model) filtered(lines []string, note *string) []string {
+	f := strings.ToLower(m.filter[paneMain])
+	if f == "" {
+		return lines
+	}
+	var keep []string
+	for _, l := range lines {
+		if strings.Contains(strings.ToLower(ui.Strip(l)), f) {
+			keep = append(keep, l)
+		}
+	}
+	*note += " · /" + m.filter[paneMain]
+	return keep
+}
+
+// viewLines: the current view tab: its alerts first, then what it showed, and how its last run
+// went if that is worth saying.
+func (m *model) viewLines(t styles, w int) ([]string, string) {
+	r := m.vr
+	if r == nil {
+		return []string{t.muted.Render("starting…")}, ""
+	}
+	rd := view.Render{Width: w, Color: true, S: m.st, Hist: r.hist}
+	var ls []string
+	if r.status != "" {
+		ls = append(ls, rd.Error(r.status)...)
+	}
+	switch {
+	case r.v.Format == view.FormatJSON && r.bad != "":
+		ls = append(ls, rd.Error(r.bad)...)
+	case r.v.Format == view.FormatJSON && r.doc != nil:
+		ls = append(ls, rd.Doc(r.doc)...)
+	}
+	ls = append(ls, r.lines...)
+	if len(ls) == 0 {
+		if r.running {
+			ls = []string{t.muted.Render("running " + r.v.Name + "…")}
+		} else {
+			ls = []string{t.muted.Render("(the view showed nothing)")}
+		}
+	}
+	return ls, r.note()
+}
+
+// alertLines: every project's alerts, the selected project's first.
+func (m *model) alertLines(t styles) []string {
+	var ls []string
+	ps := append([]*proj(nil), m.ps...)
+	if c := m.cur(); c != nil {
+		for i, p := range ps {
+			if p == c {
+				ps = append(append([]*proj{c}, ps[:i]...), ps[i+1:]...)
+				break
 			}
 		}
-		lines = keep
-		note += " · /" + m.filter[paneMain]
 	}
-	return title, lines, note
+	now := time.Now()
+	for _, p := range ps {
+		if len(p.alerts) == 0 {
+			continue
+		}
+		ls = append(ls, t.bold.Render(p.p.Name))
+		for _, a := range p.alerts {
+			mark, st := ui.MarkInfo, t.muted
+			switch a.Level {
+			case agent.Error:
+				mark, st = ui.MarkBad, t.bad
+			case agent.Warn:
+				mark, st = ui.MarkWarn, t.warn
+			}
+			since := ""
+			if !a.Since.IsZero() {
+				since = Dur(now.Sub(a.Since))
+			}
+			ls = append(ls, "  "+t.muted.Render(ui.Pad(since, 7))+" "+st.Render(mark+" "+a.Text))
+		}
+	}
+	if len(ls) == 0 {
+		ls = []string{t.ok.Render(ui.MarkOK) + " no alerts"}
+	}
+	return ls
 }
 
 func logLine(t styles, l string) string {
@@ -348,7 +524,7 @@ func (m *model) footer(t styles) string {
 	case m.help:
 		ks = []string{k("esc", "close")}
 	case m.focus == paneMain || m.focus == paneDetails:
-		ks = []string{k("j/k", "scroll"), k("g/G", "top/end"), k("[ ]", "tab"), k("/", "filter"), k("tab", "pane"), k("?", "keys"), k("q", "quit")}
+		ks = []string{k("j/k", "scroll"), k("g/G", "top/end"), k("[ ]", "tab"), k("w", "views"), k("/", "filter"), k("tab", "pane")}
 	default:
 		ks = []string{k("j/k", "move"), k("s", "start"), k("x", "stop"), k("d", "drain"), k("c", "check"), k("t", "test"), k("e", "env"), k("a", "add"), k("/", "filter"), k("tab", "pane")}
 	}
@@ -377,8 +553,10 @@ var helpGroups = []struct {
 }{
 	{"Everywhere", [][2]string{
 		{"tab ⇧tab", "next / previous pane"}, {"1 2 3 4", "Projects, Lanes, Details, the right pane"},
-		{"/", "filter the pane (esc clears)"}, {"[ ]", "the right pane's tabs"}, {"L", "service log"}, {"o", "output of the last action"},
-		{"r", "refresh"}, {"a", "add a project (sat setup)"}, {"S", "self-update: notes, checks, asks"},
+		{"/", "filter the pane (esc clears)"}, {"[ ]", "the right pane's tabs: logs, output, alerts, views"},
+		{"w", "the next view tab (◆: the project's own views)"}, {"!", "alerts, every project's"},
+		{"L", "service log"}, {"o", "output of the last action"},
+		{"r", "refresh; runs the shown view again"}, {"a", "add a project (sat setup)"}, {"S", "self-update: notes, checks, asks"},
 		{"M", "migrate a bash node (~/sat), when there is one"}, {"ctrl+u", "uninstall everything: lists it, asks"},
 		{"?", "this help"}, {"q", "quit"}}},
 	{"Projects and Lanes", [][2]string{
@@ -387,7 +565,7 @@ var helpGroups = []struct {
 		{"t", "selftest"}, {"u", "update: bundle, check, project setup"}, {"e", "edit env in $EDITOR"}, {"E", "edit config"},
 		{"v", "set or unset an env KEY"}, {"l", "the lane's log"}, {"U", "uninstall this project: lists it, asks"}}},
 	{"Right pane and Details", [][2]string{
-		{"j k ↑ ↓", "scroll"}, {"pgup pgdown", "a page"}, {"g G", "top, end (follow)"}}},
+		{"j k ↑ ↓", "scroll (the mouse wheel too)"}, {"pgup pgdown", "a page"}, {"g G", "top, end (follow)"}}},
 }
 
 func (m *model) helpLines(t styles, w int) []string {
@@ -472,15 +650,79 @@ func (m *model) View() tea.View {
 	return v
 }
 
-func (m *model) panes(t styles, w, h int) []string {
-	lw := min(max(w*2/5, 30), 48)
+// layout: where the panes go in w x h. As the terminal shrinks the node charts go first, then
+// Details; the Lanes pane keeps room for a few lanes.
+type layout struct {
+	lw, rw, ph, lh, dh int
+	details, node      bool
+	chartH             int        // rows per node chart
+	top                [panes]int // the first row shown, per pane
+}
+
+func (m *model) layout(t styles, w, h int) layout {
+	var l layout
+	l.lw = min(max(w*2/5, 30), 48)
 	if w < 60 {
-		lw = w / 2
+		l.lw = w / 2
 	}
-	rw := w - lw
-	ph := min(max(len(m.ps), 1)+2, max(h/3, 4))
-	dh := min(9, max(h-ph-4, 3))
-	lh := h - ph - dh
+	l.rw = w - l.lw
+	l.ph = min(max(len(m.ps), 1)+2, max(h/3, 4))
+	lanes := 1
+	if p := m.cur(); p != nil {
+		lanes = p.slots
+	}
+	lmin := min(lanes, 4) + 2
+	avail := h - l.ph - lmin
+	base := len(m.detailRows(t, l.lw-4)) + 2
+	node := len(m.ps) + 4
+	switch {
+	case avail >= base+node+1 && h >= 30:
+		// the lanes get what they need, the charts the rest (taller, up to 4 rows)
+		l.details, l.node = true, true
+		l.lh = max(lmin, min(lanes+2, h-l.ph-base-node-1))
+		l.chartH = min(max(1+(h-l.ph-l.lh-base-node-1)/3, 1), 4)
+		l.dh = h - l.ph - l.lh
+		return l
+	case avail >= 5:
+		l.details, l.dh = true, min(base, avail, 9)
+	}
+	l.lh = h - l.ph - l.dh
+	return l
+}
+
+// mainWidth: the columns inside the right pane.
+func (m *model) mainWidth() int {
+	if m.lay.rw > 0 {
+		return m.lay.rw - 4
+	}
+	w := m.w
+	if w <= 0 {
+		w = 100
+	}
+	return w - min(max(w*2/5, 30), 48) - 4
+}
+
+// more: how far a pane's content runs past its window, as ↑N ↓N.
+func more(t styles, base string, top, shown, total int) string {
+	var a []string
+	if base != "" {
+		a = append(a, base)
+	}
+	if top > 0 {
+		a = append(a, fmt.Sprintf("↑%d", top))
+	}
+	if rest := total - top - shown; rest > 0 {
+		a = append(a, fmt.Sprintf("↓%d", rest))
+	}
+	return strings.Join(a, " ")
+}
+
+func (m *model) panes(t styles, w, h int) []string {
+	l := m.layout(t, w, h)
+	lw, rw, ph, lh, dh := l.lw, l.rw, l.ph, l.lh, l.dh
+	if !l.details && m.focus == paneDetails {
+		m.focus = paneLanes
+	}
 	n := m.cur()
 	lt := paneNames[paneLanes]
 	if n != nil {
@@ -496,23 +738,43 @@ func (m *model) panes(t styles, w, h int) []string {
 	if pn == "" && len(m.ps) > 0 {
 		pn = fmt.Sprintf("%d of %d", min(m.sel[paneProjects]+1, len(m.shown())), len(m.shown()))
 	}
-	left := box(t, 1, paneNames[paneProjects], pn, scrollTo(m.projectRows(t, lw-4), m.sel[paneProjects], ph-2), lw, ph, m.focus == paneProjects)
-	left = append(left, box(t, 2, lt, note(paneLanes), scrollTo(m.laneRows(t, lw-4), m.sel[paneLanes], lh-2), lw, lh, m.focus == paneLanes)...)
-	left = append(left, box(t, 3, paneNames[paneDetails], "", m.detailRows(t, lw-4), lw, dh, m.focus == paneDetails)...)
+	pr := m.projectRows(t, lw-4)
+	prs, ptop := scrollTo(pr, m.sel[paneProjects], ph-2)
+	l.top[paneProjects] = ptop
+	left := box(t, 1, paneNames[paneProjects], more(t, pn, ptop, len(prs), len(pr)), prs, lw, ph, m.focus == paneProjects)
+	lr := m.laneRows(t, lw-4)
+	lrs, ltop := scrollTo(lr, m.sel[paneLanes], lh-2)
+	l.top[paneLanes] = ltop
+	left = append(left, box(t, 2, lt, more(t, note(paneLanes), ltop, len(lrs), len(lr)), lrs, lw, lh, m.focus == paneLanes)...)
+	if l.details {
+		dr := m.detailRows(t, lw-4)
+		if l.node {
+			dr = append(append(dr, ""), m.nodeRows(t, lw-4, l.chartH)...)
+		}
+		m.dtop = min(m.dtop, max(len(dr)-(dh-2), 0))
+		end := min(m.dtop+dh-2, len(dr))
+		l.top[paneDetails] = m.dtop
+		left = append(left, box(t, 3, paneNames[paneDetails], more(t, "", m.dtop, end-m.dtop, len(dr)), dr[m.dtop:end], lw, dh, m.focus == paneDetails)...)
+	}
+	m.lay = l
 	var right []string
 	if m.form != nil {
 		right = box(t, 4, t.head.Render("Add a project"), "sat setup", m.form.view(rw-4), rw, h, true)
 	} else {
-		title, lines, nt := m.mainLines(t)
+		title, lines, nt := m.mainLines(t, rw-4)
 		for i := range lines {
 			lines[i] = ui.Truncate(lines[i], rw-4)
 		}
-		right = box(t, 4, title, nt, m.tail(lines, h-2), rw, h, m.focus == paneMain)
+		shown := m.tail(lines, h-2)
+		top := len(lines) - m.scroll - len(shown)
+		right = box(t, 4, title, more(t, nt, top, len(shown), len(lines)), shown, rw, h, m.focus == paneMain)
 	}
 	m.geo = geometry{mainH: h - 2}
 	m.geo.panes[paneProjects] = rect{0, 1, lw, ph}
 	m.geo.panes[paneLanes] = rect{0, 1 + ph, lw, lh}
-	m.geo.panes[paneDetails] = rect{0, 1 + ph + lh, lw, dh}
+	if l.details {
+		m.geo.panes[paneDetails] = rect{0, 1 + ph + lh, lw, dh}
+	}
 	m.geo.panes[paneMain] = rect{lw, 1, rw, h}
 	out := make([]string, h)
 	for i := range out {
@@ -528,13 +790,13 @@ func (m *model) panes(t styles, w, h int) []string {
 	return out
 }
 
-// scrollTo: the window of rows that keeps the selected one in view.
-func scrollTo(rows []string, sel, h int) []string {
+// scrollTo: the window of rows that keeps the selected one in view, and its first row.
+func scrollTo(rows []string, sel, h int) ([]string, int) {
 	if h <= 0 || len(rows) <= h {
-		return rows
+		return rows, 0
 	}
 	start := min(max(sel-h+1, 0), len(rows)-h)
-	return rows[start : start+h]
+	return rows[start : start+h], start
 }
 
 func (m *model) click(x, y int) {
@@ -544,7 +806,7 @@ func (m *model) click(x, y int) {
 			continue
 		}
 		m.focus = p
-		row := y - r.y - 1
+		row := y - r.y - 1 + m.lay.top[p]
 		switch p {
 		case paneProjects:
 			if row >= 0 && row < len(m.shown()) {

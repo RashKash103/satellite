@@ -32,6 +32,9 @@ for it.
 - **Easy on and off.** `sat start`, `sat drain` (finish what's running, then stop), `sat stop`,
   `sat autostart on|off`. A node is a systemd user service, and `sat` alone is a live view of its
   lanes, their jobs and progress.
+- **Views and alerts.** A project can bring its own views of its work (a queue, a lane's steps,
+  charts), shown by `sat PROJECT view NAME` and as tabs in the live view. The node raises alerts
+  when a lane stalls, the hub goes quiet or the disk fills, and can send a desktop notification.
 - **One binary on the node.** `sat`, a static Go binary, with nothing else to install. It updates
   itself only when you ask (from this repository's releases, checksummed and attested), and
   `sat uninstall` takes it all away again.
@@ -106,8 +109,8 @@ cat ~/.local/share/sat-hello/done/job1                  # on the hub
 |---|---|
 | [How it works](docs/how-it-works.md) | roles, the lease lifecycle, what happens when a node vanishes |
 | [Hub setup](docs/hub.md) | install, project files, sshd, the reaper, watching it |
-| [Node setup and control](docs/node.md) | key login, the binary, `sat setup`, the `sat` command and live view, node config, updates, uninstall, migrating |
-| [Writing a project](docs/projects.md) | the hooks contract, the bundle, the job environment, a walkthrough of `examples/hello` |
+| [Node setup and control](docs/node.md) | key login, the binary, `sat setup`, the `sat` command and live view, node config, alerts, updates, uninstall, migrating |
+| [Writing a project](docs/projects.md) | the hooks contract, the bundle, the job environment, views, a walkthrough of `examples/hello` |
 | [Lessons from the first project](docs/lessons.md) | the gotchas: sharing a queue with the hub's workers, claim filters, trusting a node's results, tools that install on first use, coding agents on a node, disk and paths |
 | [Security](docs/security.md) | what a node key can and can't do, and what you are trusting |
 | [Testing](docs/testing.md) | the end-to-end test, and testing your own project without a second machine |
@@ -130,7 +133,7 @@ hub/sat-ssh-gate     forced command for node keys
 hub/sat-reaper       reaps silent leases every minute (hub/sat-reaper.service runs it)
 hub/pre-receive      git hook: pushes through the gate may write only the project's PUSH_PREFIX
 cmd/sat/             the node: one binary (agent, control command, live view, sat-call for jobs)
-internal/            its packages: agent, hub (SSH), bundle, plan (requirements), tui, selfupdate, cli
+internal/            its packages: agent, hub (SSH), bundle, plan (requirements), view, tui, selfupdate, cli
 e2e/                 end-to-end test of the Go node against the bash hub
 node/                the legacy bash node (sat-setup, sat-agent, sat, sat-call, sat-lib, sat@.service)
 examples/hello/      a complete small project

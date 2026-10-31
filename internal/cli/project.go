@@ -109,6 +109,10 @@ func project(name, cmd string, a []string) int {
 		return envCmd(p, a)
 	case "update":
 		return update(p)
+	case "views":
+		return viewsCmd(p)
+	case "view":
+		return viewCmd(p, a)
 	default:
 		failHint("no command "+cmd, "sat help lists them")
 		return 2

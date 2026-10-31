@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# sat-view: title=Queue; scope=project; mode=snapshot; every=10
+# The hub's queue for hello, as text: how many jobs wait, run, passed and failed (the hub's
+# get .counts), and what this node did. sat hello view queue, or its tab in the live view.
+if [ "${SAT_VIEW_COLOR:-}" = 1 ]; then b=$'\e[1m' g=$'\e[32m' r=$'\e[31m' y=$'\e[33m' o=$'\e[0m'; else b= g= r= y= o=; fi
+if counts=$(sat-call get .counts 2>/dev/null); then
+  while read -r state n; do
+    case $state in queue) c=$y ;; done) c=$g ;; failed) c=$r ;; *) c= ;; esac
+    printf '%-8s %s%s%s\n' "$state" "$c$b" "$n" "$o"
+  done <<< "$counts"
+else
+  echo "${r}the hub can't be reached${o}"
+fi
+log=$SAT_BASE/state/agent.log
+echo
+passed=$(grep -c ' passed$' "$log" 2>/dev/null) failed=$(grep -c ' failed$' "$log" 2>/dev/null)
+echo "this node: ${passed:-0} passed, ${failed:-0} failed"

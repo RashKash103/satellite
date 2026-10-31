@@ -26,11 +26,14 @@ sat [PROJECT] COMMAND        PROJECT may be left out when only one is set up
   drain            take no new jobs; stop once the running ones finish
   status           service state, hub, jobs in progress, disk use, recent log lines
   logs             follow the service log
+  alerts [-w]      what needs attention: stalled lanes, an unreachable hub, a full disk ...
   autostart on|off start at boot (off by default)
   check            what this node is missing, and the commands that would install it
   install          show those steps (apt ones simulated, never removing), ask, run them
   selftest         the project's own check of this node (its sat/selftest)
   update           refresh the bundle from the hub, check, rerun the project's sat/setup
+  views            the project's views (sat/views/ in its bundle)
+  view NAME [--lane N] [-w]   show one; -w keeps it live
 sat setup [--install] HUB_IP PROJECT [HUB_USER]   make this machine a node for PROJECT
 sat self-update [--yes]      install the newest release (docs/security.md)
 sat uninstall [--yes] [PROJECT]   remove a project, or with the last one everything
@@ -88,6 +91,8 @@ func Main(version string, args []string) int {
 		name = ps[0]
 	case a[0] == "status":
 		return statusAll()
+	case a[0] == "alerts":
+		return alerts(ps, a[1:])
 	case len(ps) == 0:
 		if h := helpFor(a[0]); h != nil && wantsHelp(a[0], a[1:]) {
 			printHelp(ui.Out(), h)
@@ -108,6 +113,9 @@ func Main(version string, args []string) int {
 	if h := helpFor(a[0]); h != nil && wantsHelp(a[0], a[1:]) {
 		printHelp(ui.Out(), h)
 		return 0
+	}
+	if a[0] == "alerts" {
+		return alerts([]string{name}, a[1:])
 	}
 	return project(name, a[0], a[1:])
 }

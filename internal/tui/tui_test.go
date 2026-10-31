@@ -70,13 +70,13 @@ func typ(m *model, s string) {
 	}
 }
 
-func view(m *model) string { return ui.Strip(m.View().Content) }
+func screen(m *model) string { return ui.Strip(m.View().Content) }
 
 func TestViewSizes(t *testing.T) {
 	m := node(t)
 	for _, sz := range [][2]int{{80, 24}, {120, 40}, {100, 30}} {
 		m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
-		v := view(m)
+		v := screen(m)
 		ls := strings.Split(v, "\n")
 		if len(ls) != sz[1] {
 			t.Errorf("%dx%d: %d lines", sz[0], sz[1], len(ls))
@@ -131,12 +131,12 @@ func TestFocusAndMoves(t *testing.T) {
 		t.Errorf("enter: %d %d", m.focus, m.tab)
 	}
 	key(m, "]")
-	if m.tab != tabService || !strings.Contains(view(m), "nothing logged yet") {
+	if m.tab != tabService || !strings.Contains(screen(m), "nothing logged yet") {
 		t.Errorf("tab %d", m.tab)
 	}
 	key(m, "[")
 	// Click a project and a lane.
-	view(m)
+	screen(m)
 	r := m.geo.panes[paneProjects]
 	m.Update(tea.MouseClickMsg{X: r.x + 3, Y: r.y + 2})
 	if m.cur().p.Name != "other" || m.focus != paneProjects {
@@ -148,7 +148,7 @@ func TestFilter(t *testing.T) {
 	m := node(t)
 	key(m, "/")
 	typ(m, "oth")
-	if v := view(m); strings.Contains(strings.Split(v, "2 Lanes")[0], "hello ") || m.cur().p.Name != "other" {
+	if v := screen(m); strings.Contains(strings.Split(v, "2 Lanes")[0], "hello ") || m.cur().p.Name != "other" {
 		t.Errorf("filter:\n%s", v)
 	}
 	key(m, "enter")
@@ -163,12 +163,12 @@ func TestFilter(t *testing.T) {
 	key(m, "4")
 	key(m, "/")
 	typ(m, "link")
-	v := view(m)
+	v := screen(m)
 	if !strings.Contains(v, "linking c") || strings.Contains(v, "compiling a") {
 		t.Errorf("log filter:\n%s", v)
 	}
 	key(m, "esc")
-	if !strings.Contains(view(m), "compiling a") {
+	if !strings.Contains(screen(m), "compiling a") {
 		t.Error("esc kept the log filter")
 	}
 }
@@ -176,7 +176,7 @@ func TestFilter(t *testing.T) {
 func TestHelpOverlay(t *testing.T) {
 	m := node(t)
 	key(m, "?")
-	v := view(m)
+	v := screen(m)
 	for _, w := range []string{"Keys", "Everywhere", "Projects and Lanes", "Right pane and Details", "add a project", "uninstall this project",
 		"install it", "edit env", "self-update", "migrate", "autostart", "selftest"} {
 		if !strings.Contains(v, w) {
@@ -196,7 +196,7 @@ func TestHelpOverlay(t *testing.T) {
 func TestStopAsks(t *testing.T) {
 	m := node(t)
 	key(m, "x")
-	if !strings.Contains(view(m), "Stop hello now?") || m.last.mode != "" {
+	if !strings.Contains(screen(m), "Stop hello now?") || m.last.mode != "" {
 		t.Fatal("stop did not ask")
 	}
 	if c := key(m, "n"); c != nil || m.confirm != nil || m.last.mode != "" {
@@ -282,7 +282,7 @@ func TestStreamedOutput(t *testing.T) {
 		m.Update(msg)
 	}
 	_ = cmd
-	v := view(m)
+	v := screen(m)
 	for _, w := range []string{"Output", "$ sat hello check", "checking hello check", "missing: x", "plain", "exit status 1", "check hello failed"} {
 		if !strings.Contains(v, w) {
 			t.Errorf("lacks %q:\n%s", w, v)
@@ -328,14 +328,14 @@ func TestEditor(t *testing.T) {
 func TestSetupForm(t *testing.T) {
 	m := node(t)
 	key(m, "a")
-	if !strings.Contains(view(m), "Add a project") {
+	if !strings.Contains(screen(m), "Add a project") {
 		t.Fatal("no form")
 	}
 	key(m, "enter")
 	key(m, "enter")
 	key(m, "enter")
 	key(m, "enter") // submit with nothing filled in
-	if m.form == nil || !strings.Contains(view(m), "the hub's IP address is needed") {
+	if m.form == nil || !strings.Contains(screen(m), "the hub's IP address is needed") {
 		t.Fatal("submitted an empty form")
 	}
 	m.form.at = 0
@@ -374,7 +374,7 @@ func TestNoProjects(t *testing.T) {
 	t.Setenv("SAT_SYSTEMCTL", "true")
 	m := newModel("dev", "/bin/false", Options{})
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if v := view(m); !strings.Contains(v, "none yet: a adds one") {
+	if v := screen(m); !strings.Contains(v, "none yet: a adds one") {
 		t.Error(v)
 	}
 	if key(m, "s"); m.last.mode != "" || !strings.Contains(m.msg, "a adds one") {

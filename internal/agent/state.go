@@ -33,6 +33,7 @@ type State struct {
 	DiskOK      bool      `json:"disk_ok"`
 	Note        string    `json:"note,omitempty"` // why the agent isn't claiming, when it isn't
 	Lanes       []Lane    `json:"lanes"`
+	Alerts      []Alert   `json:"alerts,omitempty"`
 }
 
 type Lane struct {

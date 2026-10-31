@@ -26,6 +26,7 @@ import (
 	"github.com/RashKash103/satellite/internal/plan"
 	"github.com/RashKash103/satellite/internal/selfupdate"
 	"github.com/RashKash103/satellite/internal/ui"
+	"github.com/RashKash103/satellite/internal/view"
 )
 
 // Dur: 45s, 3m12s, 2h05m (ui.Dur).
@@ -50,15 +51,6 @@ var paneNames = [panes]string{"Projects", "Lanes", "Details", ""}
 
 type tab int
 
-const (
-	tabLog tab = iota
-	tabService
-	tabOutput
-	tabs
-)
-
-var tabNames = [tabs]string{"Lane log", "Service log", "Output"}
-
 type proj struct {
 	p               *conf.Project
 	st              *agent.State
@@ -67,6 +59,9 @@ type proj struct {
 	slots           int
 	disk            agent.Disk
 	diskAt          time.Time
+	views           []view.View
+	vsig            string        // the views directory as last read (view.Sig)
+	alerts          []agent.Alert // the agent's, a failed service's and the views'
 }
 
 // job: an action streaming its output into the Output tab.
@@ -121,6 +116,16 @@ type model struct {
 	spin         spinner.Model
 	svc          []string // the selected project's service log
 	geo          geometry
+	tabKey       string            // the current tab, by key: it stays put as the tab list changes
+	tabProj      string            // the project the tab belongs to
+	tabFor       map[string]string // the tab last chosen for each project
+	vr           *viewRun          // the view the right pane shows
+	runs         int
+	hist         map[string]*view.Hist   // metric values, per project/view
+	vAlerts      map[string][]view.Block // the alert blocks of each view's last document
+	node         *nodeStats
+	dtop         int // Details: lines scrolled down
+	lay          layout
 }
 
 type tick time.Time
@@ -136,8 +141,11 @@ func Run(version, exe string, opt Options) int {
 
 func newModel(version, exe string, opt Options) *model {
 	m := &model{version: version, exe: exe, opt: opt, st: ui.Palette(true),
-		spin: spinner.New(spinner.WithSpinner(spinner.MiniDot))}
+		spin:   spinner.New(spinner.WithSpinner(spinner.MiniDot)),
+		tabFor: map[string]string{}, hist: map[string]*view.Hist{}, vAlerts: map[string][]view.Block{}, node: newNodeStats(),
+		tabKey: tabKeys[tabLog]}
 	m.refresh()
+	m.syncTabs()
 	return m
 }
 
@@ -170,7 +178,10 @@ func (m *model) refresh() {
 		}
 		x := &proj{p: p}
 		if o := old[n]; o != nil {
-			x.disk, x.diskAt = o.disk, o.diskAt
+			x.disk, x.diskAt, x.views, x.vsig = o.disk, o.diskAt, o.views, o.vsig
+		}
+		if sig := view.Sig(p); sig != x.vsig || x.views == nil {
+			x.views, x.vsig = view.List(p), sig // a new bundle: its views are read again
 		}
 		x.st, _ = agent.ReadState(p)
 		x.active, x.enabled = sysctl("is-active", p.Unit()), sysctl("is-enabled", p.Unit())
@@ -184,8 +195,10 @@ func (m *model) refresh() {
 		if time.Since(x.diskAt) > 30*time.Second {
 			x.disk, x.diskAt = agent.Measure(p, true), time.Now() // the size is cached for 30 min
 		}
+		x.alerts = agent.Sorted(append(m.engineAlerts(x), m.viewAlerts(n)...))
 		m.ps = append(m.ps, x)
 	}
+	m.node.sample(time.Now())
 	m.update = selfupdate.Cached(m.version)
 	if m.opt.Legacy != nil {
 		m.legacy = m.opt.Legacy()
@@ -194,6 +207,15 @@ func (m *model) refresh() {
 	if m.tab == tabService {
 		m.loadService()
 	}
+}
+
+// engineAlerts: what the project's agent raised, and a failed service.
+func (m *model) engineAlerts(x *proj) []agent.Alert {
+	var as []agent.Alert
+	if a := agent.ServiceAlert(x.p, x.active); a != nil {
+		as = append(as, *a)
+	}
+	return append(as, x.st.Active()...)
 }
 
 // shown: the projects that pass the filter.
@@ -381,13 +403,6 @@ func (m *model) loadService() {
 	}
 }
 
-func (m *model) setTab(t tab) {
-	m.tab, m.scroll = (t+tabs)%tabs, 0
-	if m.tab == tabService {
-		m.loadService()
-	}
-}
-
 func (m *model) startInput(kind, placeholder, value string) tea.Cmd {
 	in := textinput.New()
 	in.Prompt = map[string]string{"filter": "/", "env": "env "}[kind]
@@ -398,7 +413,22 @@ func (m *model) startInput(kind, placeholder, value string) tea.Cmd {
 	return in.Focus()
 }
 
+// Update handles msg, then keeps the tab and the view it runs in step with the selection.
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var c tea.Cmd
+	if vc, ok := m.viewMsg(msg); ok {
+		c = vc
+	} else {
+		_, c = m.handle(msg)
+	}
+	m.syncTabs()
+	if rc := m.syncRun(); rc != nil {
+		return m, tea.Batch(c, rc)
+	}
+	return m, c
+}
+
+func (m *model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tick:
 		m.refresh()
@@ -500,15 +530,20 @@ func (m *model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	switch k {
 	case "q", "ctrl+c":
+		m.stopRun()
 		return m, tea.Quit
 	case "?":
 		m.help, m.helpTop = true, 0
 	case "tab":
-		m.focus = (m.focus + 1) % panes
+		m.focus = m.nextPane(m.focus, 1)
 	case "shift+tab":
-		m.focus = (m.focus + panes - 1) % panes
+		m.focus = m.nextPane(m.focus, panes-1)
 	case "1", "2", "3", "4":
-		m.focus = pane(k[0] - '1')
+		if p := pane(k[0] - '1'); p == paneDetails && m.detailsHidden() {
+			m.say("Details is hidden: the terminal is too small for it", false)
+		} else {
+			m.focus = p
+		}
 	case "esc":
 		m.filter[m.focus] = ""
 		m.clamp()
@@ -517,10 +552,17 @@ func (m *model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		m.refresh()
 		m.say("refreshed", false)
+		if m.vr != nil {
+			return m, m.restartRun()
+		}
 	case "[":
 		m.setTab(m.tab - 1)
 	case "]":
 		m.setTab(m.tab + 1)
+	case "w":
+		m.nextView()
+	case "!":
+		m.setTab(tabAlerts)
 	case "L":
 		m.setTab(tabService)
 	case "o":
@@ -633,8 +675,39 @@ func (m *model) projectKey(p *proj, k string) tea.Cmd {
 	return nil
 }
 
+// detailsHidden: the last drawing had no room for Details.
+func (m *model) detailsHidden() bool { return m.lay.lw > 0 && !m.lay.details }
+
+// nextPane: the pane step panes on from p, past a hidden Details.
+func (m *model) nextPane(p pane, step pane) pane {
+	p = (p + step) % panes
+	if p == paneDetails && m.detailsHidden() {
+		p = (p + step) % panes
+	}
+	return p
+}
+
 func (m *model) move(k string) {
-	if m.focus == paneMain || m.focus == paneDetails {
+	if m.focus == paneDetails {
+		page := max(m.lay.dh-3, 1)
+		switch k {
+		case "up", "k":
+			m.dtop--
+		case "down", "j":
+			m.dtop++
+		case "pgup":
+			m.dtop -= page
+		case "pgdown":
+			m.dtop += page
+		case "g", "home":
+			m.dtop = 0
+		case "G", "end":
+			m.dtop = 1 << 30
+		}
+		m.dtop = max(m.dtop, 0) // and at most the end, when drawn
+		return
+	}
+	if m.focus == paneMain {
 		page := max(m.geo.mainH-2, 1)
 		switch k {
 		case "up", "k":
@@ -682,7 +755,7 @@ func (m *model) move(k string) {
 
 func (m *model) paneTitle(p pane) string {
 	if p == paneMain {
-		return tabNames[m.tab]
+		return m.curTab().name
 	}
 	return paneNames[p]
 }

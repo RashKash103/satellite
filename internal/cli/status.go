@@ -34,6 +34,7 @@ type statusInfo struct {
 	Lanes                []agent.Lane
 	Claims               [][2]string // lane, job: from the claim files when the agent isn't live
 	Missing              int         // requirements missing (only looked at when not active)
+	Alerts               []agent.Alert
 	Disk                 agent.Disk
 	Log                  []string
 }
@@ -75,6 +76,7 @@ func gather(t *ui.T, p *conf.Project) *statusInfo {
 	})
 	var pe hub.ProtocolError
 	s.NotClaiming = errors.As(s.HubErr, &pe)
+	s.Alerts = alertsOf(p, s.State)
 	if st, err := agent.ReadState(p); err == nil && st.Live() {
 		s.Live, s.Note, s.Lanes = true, st.Note, st.Lanes
 	} else {
@@ -138,6 +140,9 @@ func (s *statusInfo) renderPlain(t *ui.T, now time.Time) {
 	if s.Missing > 0 {
 		t.Printf("requirements: %d missing, so the service won't start (sat %s check)\n", s.Missing, s.Name)
 	}
+	for _, a := range s.Alerts {
+		t.Printf("alert: %s: %s (since %s)\n", a.Level, a.Text, sinceWord(a.Since, now))
+	}
 	hold := ""
 	if !s.Disk.OK(1) {
 		hold = "  (not taking work: low on room)"
@@ -188,6 +193,9 @@ func (s *statusInfo) renderStyled(t *ui.T, now time.Time) {
 	}
 	if s.Note != "" {
 		rows = append(rows, []string{t.Muted("agent"), t.Warn(s.Note)})
+	}
+	for _, a := range s.Alerts {
+		rows = append(rows, []string{t.Muted("alert"), alertText(t, a, now)})
 	}
 	if s.Missing > 0 {
 		rows = append(rows, []string{t.Muted("needs"), t.Warn(ui.Plural(s.Missing, "requirement", "requirements")+" missing, so the service won't start") + t.Muted(": sat "+s.Name+" check")})

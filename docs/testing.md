@@ -36,9 +36,13 @@ a fake `systemctl` that only records what it is asked. It checks:
   a hub too old for that, `sat uninstall PROJECT` not asking it;
 - `MAX_PER_NODE`: a node with two lanes holding one job at a time, without errors, and
   `sat-hub PROJECT nodes` showing it;
-- `sat migrate` from the bash layout, with the bundle's `sat/moved`.
+- `sat migrate` from the bash layout, with the bundle's `sat/moved`;
+- the hello example's views against the running agent: listed, run once (asking the hub through
+  `sat-call`), and a lane's stream followed as the job goes and stopped by ctrl+c;
+- an alert raised by the agent (the disk floor), listed by `alerts` and `status`, notified once
+  through a fake `notify-send`, and cleared.
 
-It takes about 40 seconds and needs bash and coreutils. Timings are shortened with
+It takes about 50 seconds and needs bash and coreutils. Timings are shortened with
 `SAT_TEST_FAST=1`.
 
 ## `test/run`

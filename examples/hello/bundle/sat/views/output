@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# sat-view: title=Output; scope=lane; mode=stream
+# The lane's job output as it comes ($SAT_LOG): sat hello view output -w follows it.
+# Once (SAT_VIEW_ONCE=1), its last lines.
+[ -f "$SAT_LOG" ] || { echo "no output yet for $SAT_JOB"; exit 0; }
+echo "job $SAT_JOB on lane $SAT_SLOT"
+[ -n "${SAT_VIEW_ONCE:-}" ] && exec tail -n 20 "$SAT_LOG"
+exec tail -n 20 -F "$SAT_LOG" 2>/dev/null
