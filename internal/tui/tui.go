@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"charm.land/bubbles/v2/help"
@@ -69,7 +68,7 @@ type proj struct {
 	active, enabled string
 	drain           bool
 	slots           int
-	disk            int64
+	disk            agent.Disk
 	diskAt          time.Time
 }
 
@@ -103,21 +102,6 @@ func every() tea.Cmd { return tea.Tick(time.Second, func(t time.Time) tea.Msg { 
 
 func (m *model) Init() tea.Cmd { return every() }
 
-func diskUse(dir string) int64 {
-	var n int64
-	filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-		if err == nil {
-			if fi, err := d.Info(); err == nil {
-				if s, ok := fi.Sys().(*syscall.Stat_t); ok {
-					n += s.Blocks * 512
-				}
-			}
-		}
-		return nil
-	})
-	return n
-}
-
 func sysctl(args ...string) string {
 	out, _ := exec.Command(plan.Systemctl(), append([]string{"--user"}, args...)...).Output()
 	return strings.TrimSpace(string(out))
@@ -148,7 +132,7 @@ func (m *model) refresh() {
 			x.slots = len(x.st.Lanes)
 		}
 		if time.Since(x.diskAt) > 30*time.Second {
-			x.disk, x.diskAt = diskUse(p.Base), time.Now()
+			x.disk, x.diskAt = agent.Measure(p, true), time.Now() // the size is cached for 30 min
 		}
 		m.ps = append(m.ps, x)
 	}
@@ -233,15 +217,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func human(n int64) string {
-	f := float64(n)
-	for _, u := range []string{"B", "KB", "MB", "GB"} {
-		if f < 1024 {
-			return fmt.Sprintf("%.0f %s", f, u)
-		}
-		f /= 1024
+func diskLine(d agent.Disk) string {
+	if d.OK(1) {
+		return dim.Render("disk " + d.Why())
 	}
-	return fmt.Sprintf("%.1f TB", f)
+	return warn.Render("disk " + d.Why() + ": not taking work")
 }
 
 func (m *model) service(p *proj) string {
@@ -300,6 +280,10 @@ func (m *model) laneLine(p *proj, slot int, selected bool) string {
 		s += dim.Render("-")
 	case l.ID == "" && l.Waiting == "hub":
 		s += warn.Render("waiting for the hub")
+	case l.ID == "" && l.Waiting == "disk":
+		s += warn.Render("waiting for disk space")
+	case l.ID == "" && l.Waiting == "ready":
+		s += dim.Render("held back by sat/ready")
 	case l.ID == "" && p.drain:
 		s += dim.Render("idle (draining)")
 	case l.ID == "":
@@ -331,8 +315,9 @@ func (m *model) View() tea.View {
 	}
 	selP, selSlot := m.at()
 	for _, p := range m.ps {
-		fmt.Fprintf(&b, "%s  %s  %s\n", bold.Render(p.p.Name), m.service(p), dim.Render("disk "+human(p.disk)))
+		fmt.Fprintf(&b, "%s  %s\n", bold.Render(p.p.Name), m.service(p))
 		b.WriteString("  " + m.hubLine(p) + "\n")
+		b.WriteString("  " + diskLine(p.disk) + "\n")
 		for s := 1; s <= p.slots; s++ {
 			b.WriteString("  " + m.laneLine(p, s, p == selP && s == selSlot) + "\n")
 		}

@@ -233,9 +233,7 @@ func migrate(a []string) int {
 			continue
 		}
 		if m := filepath.Join(p.Bundle, "sat", "moved"); isExec(m) {
-			c := exec.Command(m, from, to)
-			c.Env = agent.Env(p)
-			if code(run(c)) != 0 {
+			if code(run(agent.Command(agent.Env(p), m, from, to))) != 0 {
 				fmt.Printf("%s's sat/moved failed: check %s before starting it\n", n, tilde(to))
 				rc = 1
 				continue

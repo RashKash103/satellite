@@ -29,13 +29,13 @@ import (
 // ErrRestart: the binary on disk was replaced; the caller re-executes it.
 var ErrRestart = errors.New("restart")
 
-type Intervals struct{ Renew, Poll, Unreach, Bundle, Sync, State, Protocol, Kill time.Duration }
+type Intervals struct{ Renew, Poll, Unreach, Bundle, Sync, State, Protocol, Kill, Disk time.Duration }
 
 func DefaultIntervals() Intervals {
 	if os.Getenv("SAT_TEST_FAST") == "1" { // the end-to-end test
-		return Intervals{2 * time.Second, 300 * time.Millisecond, time.Second, 3 * time.Second, time.Hour, 200 * time.Millisecond, 2 * time.Second, 3 * time.Second}
+		return Intervals{2 * time.Second, 300 * time.Millisecond, time.Second, 3 * time.Second, time.Hour, 200 * time.Millisecond, 2 * time.Second, 3 * time.Second, time.Second}
 	}
-	return Intervals{120 * time.Second, 45 * time.Second, 60 * time.Second, 5 * time.Minute, time.Hour, 2 * time.Second, 5 * time.Minute, 30 * time.Second}
+	return Intervals{120 * time.Second, 45 * time.Second, 60 * time.Second, 5 * time.Minute, time.Hour, 2 * time.Second, 5 * time.Minute, 30 * time.Second, 5 * time.Minute}
 }
 
 type Agent struct {
@@ -59,7 +59,9 @@ type Agent struct {
 		ok  bool
 		msg string
 	}
-	logMu sync.Mutex
+	logMu    sync.Mutex
+	clean    sync.Mutex // one sat/clean at a time
+	diskNote time.Time  // the last "not taking work" line
 }
 
 func (a *Agent) Logf(f string, v ...any) {
@@ -79,36 +81,38 @@ func (a *Agent) Logf(f string, v ...any) {
 	}
 }
 
-// Env: the environment jobs and the project's scripts run in: the agent's, then the project's
-// env file, then the SAT_ variables, with ~/.sat/bin first on PATH.
+// Env: the environment for the project's scripts: the agent's, with the SAT_ variables. The
+// config and the project's env file are added by the shell that starts each script (Command).
 func Env(p *conf.Project) []string {
-	m := map[string]string{}
-	var order []string
-	set := func(k, v string) {
-		if _, ok := m[k]; !ok {
-			order = append(order, k)
-		}
-		m[k] = v
-	}
+	var env []string
 	for _, kv := range os.Environ() {
-		k, v, _ := strings.Cut(kv, "=")
-		set(k, v)
-	}
-	if e, err := conf.Parse(filepath.Join(p.Base, "env"), func(k string) string { return m[k] }); err == nil {
-		for k, v := range e {
-			set(k, v)
+		if k, _, _ := strings.Cut(kv, "="); k != "SAT_PROJECT" && k != "SAT_BASE" && k != "SAT_BUNDLE" && k != "SAT_NAME" {
+			env = append(env, kv)
 		}
 	}
-	set("PATH", conf.Bin()+":"+filepath.Join(conf.Home(), ".local", "bin")+":"+m["PATH"])
-	set("SAT_PROJECT", p.Name)
-	set("SAT_BASE", p.Base)
-	set("SAT_BUNDLE", p.Bundle)
-	set("SAT_NAME", p.NodeName())
-	env := make([]string, 0, len(order))
-	for _, k := range order {
-		env = append(env, k+"="+m[k])
+	return append(env, "SAT_PROJECT="+p.Name, "SAT_BASE="+p.Base, "SAT_BUNDLE="+p.Bundle, "SAT_NAME="+p.NodeName())
+}
+
+func shq(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// Command runs one of the project's scripts as the bash node did: through bash, with the config
+// and env file sourced (set -a, so every setting reaches the script, with shell semantics), then
+// ~/.sat/bin first on PATH. env is Env(p) plus anything per call (SAT_SLOT, ...).
+func Command(env []string, script string, args ...string) *exec.Cmd {
+	w := `set -a; . "$SAT_BASE/config"; [ -f "$SAT_BASE/env" ] && . "$SAT_BASE/env"; set +a
+PATH=` + shq(conf.Bin()) + `:"$HOME/.local/bin:$PATH"; exec "$@"`
+	cmd := exec.Command("bash", append([]string{"-c", w, "sat", script}, args...)...)
+	cmd.Env = env
+	return cmd
+}
+
+// Script: the bundle's sat/NAME, if it is there and executable.
+func Script(p *conf.Project, name string) string {
+	s := filepath.Join(p.Bundle, "sat", name)
+	if fi, err := os.Stat(s); err != nil || fi.Mode()&0o111 == 0 || fi.IsDir() {
+		return ""
 	}
-	return env
+	return s
 }
 
 func (a *Agent) draining() bool {
@@ -235,12 +239,12 @@ func (a *Agent) syncBundle(ctx context.Context) error {
 }
 
 func (a *Agent) runScript(ctx context.Context, name string) {
-	s := filepath.Join(a.P.Bundle, "sat", name)
-	if fi, err := os.Stat(s); err != nil || fi.Mode()&0o111 == 0 {
+	s := Script(a.P, name)
+	if s == "" {
 		return
 	}
-	cmd := exec.CommandContext(ctx, s)
-	cmd.Env, cmd.Stdout, cmd.Stderr = a.env, a.Out, a.Out
+	cmd := Command(a.env, s)
+	cmd.Stdout, cmd.Stderr = a.Out, a.Out
 	if err := cmd.Run(); err != nil {
 		a.Logf("sat/%s: %v", name, err)
 	}
@@ -258,12 +262,12 @@ func (a *Agent) Run(ctx context.Context) error {
 	for i := range slots {
 		a.st.Lanes = append(a.st.Lanes, Lane{Slot: i + 1, Percent: -1})
 	}
-	a.Logf("starting %s on %s: %d lane(s), hub %s", p.Name, a.name, slots, a.Hub.Name())
+	a.Logf("starting %s on %s: %d lane(s), hub %s, disk: %s", p.Name, a.name, slots, a.Hub.Name(), a.disk().Why())
 	if err := a.syncBundle(ctx); err != nil {
 		a.Logf("cannot reach the hub: %v", err)
 		return err
 	}
-	if s := plan.Of(p.Bundle, a.env); len(s) > 0 {
+	if s := plan.Of(Script(p, "requirements"), func(s string) *exec.Cmd { return Command(a.env, s) }); len(s) > 0 {
 		a.Logf("this node is missing what %s needs (see: sat %s check); not starting", p.Name, p.Name)
 		a.mu.Lock()
 		a.st.Note = "missing requirements: sat " + p.Name + " check"
@@ -340,6 +344,14 @@ func (a *Agent) Run(ctx context.Context) error {
 func (a *Agent) lane(ctx context.Context, i int) {
 	slot := i + 1
 	for !a.stopping() && ctx.Err() == nil {
+		if !a.ready(i) {
+			a.nap(ctx, a.IV.Unreach)
+			continue
+		}
+		if !a.roomy(i) {
+			a.nap(ctx, a.IV.Disk)
+			continue
+		}
 		if !a.protocolOK(ctx) {
 			a.setLane(i, func(l *Lane) { l.Waiting = "hub" })
 			a.nap(ctx, a.IV.Unreach)
@@ -362,6 +374,74 @@ func (a *Agent) lane(ctx context.Context, i int) {
 		}
 		a.run(ctx, i, line)
 	}
+}
+
+// ready: the bundle's sat/ready, if any, lets this lane claim now (it can hold the node back,
+// e.g. for its own usage limit). Its output goes to the lane's log.
+func (a *Agent) ready(i int) bool {
+	s := Script(a.P, "ready")
+	if s == "" {
+		return true
+	}
+	cmd := Command(append(append([]string(nil), a.env...), "SAT_SLOT="+strconv.Itoa(i+1)), s)
+	if f, err := os.OpenFile(filepath.Join(a.P.State, fmt.Sprintf("slot%d.log", i+1)), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		defer f.Close()
+		cmd.Stdout, cmd.Stderr = f, f
+	}
+	if cmd.Run() != nil {
+		a.setLane(i, func(l *Lane) { l.Waiting = "ready" })
+		return false
+	}
+	return true
+}
+
+// roomy: below the disk floor or over MAX_GB, let the project clean up (sat/clean, one at a time),
+// then measure again; still short, take no work (said at most every 30 min).
+func (a *Agent) roomy(i int) bool {
+	d := a.disk()
+	if d.OK(1) {
+		return true
+	}
+	slot := i + 1
+	s := Script(a.P, "clean")
+	if s != "" && !a.clean.TryLock() {
+		a.setLane(i, func(l *Lane) { l.Waiting = "disk" })
+		return false // another lane is cleaning up: wait for it
+	}
+	if s != "" {
+		cmd := Command(a.env, s)
+		if f, err := os.OpenFile(filepath.Join(a.P.State, "clean.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			cmd.Stdout, cmd.Stderr = f, f
+			cmd.Run()
+			f.Close()
+		}
+		os.Remove(filepath.Join(a.P.State, "du"))
+		a.clean.Unlock()
+		d = a.disk()
+		a.Logf("[%d] low on disk: ran sat/clean (%s)", slot, d.Why())
+		if d.OK(1) {
+			return true
+		}
+	}
+	a.mu.Lock()
+	note := time.Since(a.diskNote) > 30*time.Minute
+	if note {
+		a.diskNote = time.Now()
+	}
+	a.mu.Unlock()
+	if note {
+		a.Logf("[%d] not taking work: %s", slot, d.Why())
+	}
+	a.setLane(i, func(l *Lane) { l.Waiting = "disk" })
+	return false
+}
+
+func (a *Agent) disk() Disk {
+	d := Measure(a.P, false)
+	a.mu.Lock()
+	a.st.Disk, a.st.DiskOK = d, d.OK(1)
+	a.mu.Unlock()
+	return d
 }
 
 func errOr(err error, rc int) error {
@@ -408,8 +488,8 @@ func (a *Agent) run(ctx context.Context, i int, line string) {
 	if lf != nil {
 		defer lf.Close()
 	}
-	cmd := exec.Command(filepath.Join(a.P.Bundle, "sat", "job"), words...)
-	cmd.Env = append(append([]string(nil), a.env...), "SAT_SLOT="+strconv.Itoa(slot), "SAT_RESULT="+res, "SAT_PROGRESS="+prog)
+	cmd := Command(append(append([]string(nil), a.env...), "SAT_SLOT="+strconv.Itoa(slot), "SAT_RESULT="+res, "SAT_PROGRESS="+prog),
+		filepath.Join(a.P.Bundle, "sat", "job"), words...)
 	cmd.Stdout, cmd.Stderr = lf, lf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	a.swap.RLock()
@@ -429,7 +509,7 @@ func (a *Agent) run(ctx context.Context, i int, line string) {
 	go func() { waited <- cmd.Wait() }()
 	renew := time.NewTicker(a.IV.Renew)
 	defer renew.Stop()
-	lost, stopped := false, false
+	lost, stopped, full := false, false, false
 	cdone := ctx.Done()
 loop:
 	for {
@@ -451,6 +531,11 @@ loop:
 					kill()
 				}
 			}
+			if d := a.disk(); !d.OK(2) && !full && !lost {
+				full = true
+				a.Logf("[%d] disk nearly full (%s): stopping %s, handing it back", slot, d.Why(), id)
+				kill()
+			}
 		}
 	}
 	rc := 0
@@ -464,9 +549,9 @@ loop:
 	switch {
 	case lost:
 		a.Logf("[%d] %s stopped (lease lost)", slot, id)
-	case stopped:
+	case stopped, full:
 		a.call(bg, nil, "release", a.name, id)
-		a.Logf("[%d] %s handed back: the agent is stopping", slot, id)
+		a.Logf("[%d] %s handed back", slot, id)
 	case rc == 0:
 		b, _ := os.ReadFile(res)
 		args := append([]string{"ok", a.name, id}, printable(string(b))...)

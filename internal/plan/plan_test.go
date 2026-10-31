@@ -2,6 +2,7 @@ package plan
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -63,7 +64,11 @@ func TestOf(t *testing.T) {
 	d := t.TempDir()
 	os.MkdirAll(filepath.Join(d, "sat"), 0o755)
 	os.WriteFile(filepath.Join(d, "sat", "requirements"), []byte("#!/bin/sh\necho \"note $SAT_PROJECT\"\n"), 0o755)
-	s := Of(d, append(os.Environ(), "SAT_PROJECT=pp"))
+	s := Of(filepath.Join(d, "sat", "requirements"), func(r string) *exec.Cmd {
+		c := exec.Command(r)
+		c.Env = append(os.Environ(), "SAT_PROJECT=pp")
+		return c
+	})
 	if len(s) == 0 || s[len(s)-1] != (Step{"note", "pp"}) {
 		t.Fatal(s)
 	}

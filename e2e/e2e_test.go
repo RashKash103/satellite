@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/RashKash103/satellite/internal/cli"
+	"github.com/RashKash103/satellite/internal/conf"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
@@ -225,7 +226,7 @@ func newNode(t *testing.T, h *hub, name, config string) *node {
 	base := filepath.Join(n.home, ".sat", "projects", "hello")
 	os.MkdirAll(filepath.Join(base, "state"), 0o755)
 	_, port, _ := net.SplitHostPort(h.addr)
-	os.WriteFile(filepath.Join(base, "config"), []byte(fmt.Sprintf("HUB=sat-hub-127.0.0.1\nHUB_IP=127.0.0.1\nHUB_PORT=%s\nHUB_USER=hub\nSAT_NAME=%s   # bound to this node's key\nSLOTS=2\n%s", port, name, config)), 0o644)
+	os.WriteFile(filepath.Join(base, "config"), []byte(fmt.Sprintf("HUB=sat-hub-127.0.0.1\nHUB_IP=127.0.0.1\nHUB_PORT=%s\nHUB_USER=hub\nSAT_NAME=%s   # bound to this node's key\nSLOTS=2\nMIN_FREE_GB=0\nMIN_FREE_PCT=0\n%s", port, name, config)), 0o644)
 	return n
 }
 
@@ -302,8 +303,14 @@ func TestJobsPassFailCrashDrain(t *testing.T) {
 	h.queue("good", "1000")
 	h.queue("bad", "oops")
 	h.queue("crashy", "crash")
+	os.WriteFile(n.state("hold"), nil, 0o644) // hello's sat/ready holds the lanes back while it exists
 	a := n.agent()
 	d := h.hello
+	time.Sleep(3 * time.Second)
+	if es, _ := os.ReadDir(d + "/queue"); len(es) != 3 {
+		t.Fatal("claimed although sat/ready said not now")
+	}
+	os.Remove(n.state("hold"))
 	waitFor(t, "three jobs to finish", 60*time.Second, func() bool {
 		return exists(d+"/done/good") && exists(d+"/done/crashy") && exists(d+"/failed/bad")
 	})
@@ -363,6 +370,115 @@ func TestLostLeaseKillsTheJob(t *testing.T) {
 	waitFor(t, "the lease loss", 20*time.Second, func() bool { return strings.Contains(a.out.String(), "lease on long lost: stopping it") })
 	waitFor(t, "the job's process group to go", 10*time.Second, func() bool { return syscall.Kill(-pid, 0) != nil })
 	waitFor(t, "the lane to be free", 10*time.Second, func() bool { return !exists(n.state("slot1.claim")) })
+}
+
+func TestDiskFloor(t *testing.T) {
+	h := newHub(t, hooks(), realGate())
+	n := newNode(t, h, "nodeA", "MIN_FREE_PCT=100\n") // later lines win: keep the whole disk free
+	h.queue("j1", "10")
+	a := n.agent()
+	waitFor(t, "the refusal", 20*time.Second, func() bool { return strings.Contains(a.out.String(), "not taking work:") })
+	if !exists(n.state("cleaned")) || !strings.Contains(a.out.String(), "low on disk: ran sat/clean") {
+		t.Error("sat/clean did not run first")
+	}
+	if !exists(h.hello + "/queue/j1") {
+		t.Error("claimed with no room")
+	}
+	if strings.Count(a.out.String(), "not taking work:") != 1 {
+		t.Error("said it more than once")
+	}
+	out, _ := n.sat("hello", "status")
+	if !strings.Contains(out, "(not taking work: low on room)") || !strings.Contains(out, "keeps ") {
+		t.Errorf("status:\n%s", out)
+	}
+}
+
+func TestDiskNearlyFullStopsTheJob(t *testing.T) {
+	job := "#!/usr/bin/env bash\necho $$ > \"$SAT_BASE/state/pid-$1\"\nsleep 300 & wait\n"
+	h := newHub(t, helloCopy(t, map[string]string{"sat/job": job}), realGate())
+	n := newNode(t, h, "nodeA", "SLOTS=1\n")
+	h.queue("long", "1")
+	a := n.agent()
+	waitFor(t, "the job to start", 20*time.Second, func() bool { return exists(n.state("pid-long")) })
+	f, _ := os.OpenFile(filepath.Join(n.base(), "config"), os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString("MIN_FREE_GB=100000000\n")
+	f.Close()
+	waitFor(t, "the job to be stopped", 20*time.Second, func() bool { return strings.Contains(a.out.String(), "disk nearly full") })
+	waitFor(t, "the job back in the hub's queue", 20*time.Second, func() bool { return exists(h.hello + "/queue/long") })
+	if len(h.leases()) != 0 {
+		t.Error("lease left")
+	}
+}
+
+func TestEnvReachesJobs(t *testing.T) {
+	job := "#!/usr/bin/env bash\necho \"foo=$FOO bar=$BAR slots=$SLOTS path=${PATH%%:*}\" > \"$SAT_RESULT\"\n"
+	h := newHub(t, helloCopy(t, map[string]string{"sat/job": job}), realGate())
+	n := newNode(t, h, "nodeA", "")
+	os.WriteFile(filepath.Join(n.base(), "env"), []byte("export FOO=\"$HOME/.x\"\n"), 0o644)
+	if out, err := n.sat("hello", "env", "BAR=a b"); err != nil || !strings.Contains(out, "next job") {
+		t.Fatal(out, err)
+	}
+	if out, _ := n.sat("hello", "env"); !strings.Contains(out, "export BAR='a b'") || !strings.Contains(out, "FOO=") {
+		t.Fatal(out)
+	}
+	h.queue("j1", "1")
+	n.agent()
+	waitFor(t, "the job", 30*time.Second, func() bool { return exists(h.hello + "/done/j1") })
+	want := "foo=" + n.home + "/.x bar=a b slots=2 path=" + n.home + "/.sat/bin"
+	if s := read(h.hello + "/done/j1"); !strings.Contains(s, want) {
+		t.Errorf("job saw %q, want %q", s, want)
+	}
+}
+
+// Several projects on one node are its modes: each its own lanes, env and service, one key.
+func TestTwoProjectsOneNode(t *testing.T) {
+	name := conf.ShortHost()
+	h := newHub(t, hooks(), realGate())
+	n := newNode(t, h, name, "SLOTS=1\n")
+	other := filepath.Join(h.dir, "hello2")
+	os.MkdirAll(other+"/queue", 0o755)
+	w := filepath.Join(h.dir, "hooks2")
+	os.WriteFile(w, []byte("#!/bin/sh\nHELLO_DIR="+other+" exec "+hooks()+" \"$@\"\n"), 0o755)
+	os.WriteFile(filepath.Join(h.conf, "projects", "hello2"), []byte("HOOKS="+w+"\nLEASE=600\n"), 0o644)
+	_, port, _ := net.SplitHostPort(h.addr)
+	os.WriteFile(filepath.Join(n.home, ".sat", "config"), []byte("HUB_PORT="+port+"\n"), 0o644)
+	key := read(filepath.Join(n.home, ".ssh", "sat_ed25519"))
+	out, err := n.sat("setup", "127.0.0.1", "hello2", "hub")
+	if err != nil {
+		t.Fatalf("second setup: %v\n%s", err, out)
+	}
+	if read(filepath.Join(n.home, ".ssh", "sat_ed25519")) != key || strings.Count(read(filepath.Join(n.home, ".ssh", "config")), "Host sat-hub-127.0.0.1") != 1 {
+		t.Error("the second project did not reuse the key and alias")
+	}
+	c2 := filepath.Join(n.home, ".sat", "projects", "hello2", "config")
+	if c := read(c2); !strings.Contains(c, "SLOTS=2") || !strings.Contains(c, "SAT_NAME="+name) {
+		t.Errorf("hello2 config:\n%s", c)
+	}
+	f, _ := os.OpenFile(c2, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString("MIN_FREE_GB=0\nMIN_FREE_PCT=0\n")
+	f.Close()
+	h.queue("a1", "5")
+	os.WriteFile(other+"/queue/b1", []byte("6\n"), 0o644)
+	n.agent()
+	r := &running{out: &syncBuf{}, done: make(chan error, 1)}
+	r.cmd = exec.Command(filepath.Join(n.home, ".sat", "bin", "sat"), "agent", "hello2")
+	r.cmd.Env, r.cmd.Stdout, r.cmd.Stderr = n.env(), r.out, r.out
+	r.cmd.Start()
+	t.Cleanup(func() { r.cmd.Process.Signal(syscall.SIGTERM); r.cmd.Wait() })
+	waitFor(t, "a job from each project", 30*time.Second, func() bool { return exists(h.hello+"/done/a1") && exists(other+"/done/b1") })
+	waitFor(t, "both agents' state", 10*time.Second, func() bool {
+		return strings.Contains(read(filepath.Join(n.home, ".sat", "projects", "hello2", "state", "agent.json")), `"slot": 2`)
+	})
+	if s := read(n.state("agent.json")); strings.Contains(s, `"slot": 2`) {
+		t.Error("hello took hello2's SLOTS")
+	}
+	out, _ = n.sat("status")
+	if !strings.Contains(out, "hello:") || !strings.Contains(out, "hello2:") {
+		t.Errorf("status of all projects:\n%s", out)
+	}
+	if out, _ := n.sat("check"); !strings.Contains(out, "which project?") {
+		t.Errorf("a project command without a project: %s", out)
+	}
 }
 
 func TestProtocolMismatch(t *testing.T) {

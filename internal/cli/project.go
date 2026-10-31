@@ -42,7 +42,7 @@ func project(name, cmd string, a []string) int {
 	case "start":
 		return start(p)
 	case "check":
-		if !plan.Check(os.Stdout, plan.Of(p.Bundle, agent.Env(p)), p.Name) {
+		if !plan.Check(os.Stdout, planOf(p), p.Name) {
 			return 1
 		}
 	case "install":
@@ -78,9 +78,9 @@ func project(name, cmd string, a []string) int {
 			fmt.Printf("%s has no selftest\n", p.Name)
 			return 0
 		}
-		c := exec.Command(s)
-		c.Env = agent.Env(p)
-		return code(run(c))
+		return code(run(agent.Command(agent.Env(p), s)))
+	case "env":
+		return envCmd(p, a)
 	case "update":
 		return update(p)
 	default:
@@ -88,6 +88,11 @@ func project(name, cmd string, a []string) int {
 		return 2
 	}
 	return 0
+}
+
+func planOf(p *conf.Project) []plan.Step {
+	env := agent.Env(p)
+	return plan.Of(agent.Script(p, "requirements"), func(s string) *exec.Cmd { return agent.Command(env, s) })
 }
 
 func code(err error) int {
@@ -114,8 +119,8 @@ func claims(p *conf.Project) []string {
 }
 
 func start(p *conf.Project) int {
-	if !plan.Check(io.Discard, plan.Of(p.Bundle, agent.Env(p)), p.Name) {
-		plan.Check(os.Stdout, plan.Of(p.Bundle, agent.Env(p)), p.Name)
+	if !plan.Check(io.Discard, planOf(p), p.Name) {
+		plan.Check(os.Stdout, planOf(p), p.Name)
 		return 1
 	}
 	os.Remove(filepath.Join(p.State, "drain"))
@@ -129,7 +134,7 @@ func start(p *conf.Project) int {
 func installLog() string { return filepath.Join(conf.Root(), "installed.log") }
 
 func install(p *conf.Project) int {
-	steps := plan.Of(p.Bundle, agent.Env(p))
+	steps := planOf(p)
 	if len(steps) == 0 {
 		fmt.Println("nothing missing")
 		return 0
@@ -229,7 +234,12 @@ func status(p *conf.Project) {
 			}
 		}
 	}
-	fmt.Printf("disk: %s in %s\n", human(du(p.Base)), tilde(p.Base))
+	d := agent.Measure(p, true)
+	hold := ""
+	if !d.OK(1) {
+		hold = "  (not taking work: low on room)"
+	}
+	fmt.Printf("disk: %s%s\n", d.Why(), hold)
 	j := exec.Command(journalctl(), "--user", "-u", u, "-n", "8", "--no-pager", "-o", "cat")
 	j.Stdout = os.Stdout
 	j.Run()
@@ -272,7 +282,7 @@ func update(p *conf.Project) int {
 		return fail("bundle: " + err.Error())
 	}
 	fmt.Println(map[bool]string{true: "bundle updated from the hub", false: "bundle unchanged"}[ch])
-	if !plan.Check(os.Stdout, plan.Of(p.Bundle, agent.Env(p)), p.Name) {
+	if !plan.Check(os.Stdout, planOf(p), p.Name) {
 		return 1
 	}
 	if code := projectSetup(p); code != 0 {
@@ -289,9 +299,7 @@ func projectSetup(p *conf.Project) int {
 	if fi, err := os.Stat(s); err != nil || fi.Mode()&0o111 == 0 {
 		return 0
 	}
-	c := exec.Command(s)
-	c.Env = agent.Env(p)
-	return code(run(c))
+	return code(run(agent.Command(agent.Env(p), s)))
 }
 
 func runAgent(name string) int {

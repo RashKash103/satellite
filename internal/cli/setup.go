@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/RashKash103/satellite/internal/agent"
 	"github.com/RashKash103/satellite/internal/bundle"
 	"github.com/RashKash103/satellite/internal/conf"
 	"github.com/RashKash103/satellite/internal/hub"
@@ -276,8 +275,7 @@ func setup(a []string) int {
 	fmt.Printf("%s, %s\n", tilde(conf.Exe()), tilde(unitPath()))
 
 	say("what " + proj + " needs on this node")
-	env := agent.Env(p)
-	if steps := plan.Of(p.Bundle, env); len(steps) > 0 {
+	if steps := planOf(p); len(steps) > 0 {
 		if inst {
 			if !plan.Install(os.Stdout, os.Stdin, tty(), steps, logInstall(proj)) {
 				fmt.Println("Rerun this when it is done.")
@@ -288,7 +286,7 @@ func setup(a []string) int {
 			fmt.Println("\nRerun sat setup once they are installed.")
 			return 1
 		}
-		if steps = plan.Of(p.Bundle, env); len(steps) > 0 {
+		if steps = planOf(p); len(steps) > 0 {
 			fmt.Print("Still missing:\n" + plan.Show(steps))
 			return 1
 		}

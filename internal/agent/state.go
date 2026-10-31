@@ -29,6 +29,8 @@ type State struct {
 	Protocol    string    `json:"protocol"`
 	ProtocolOK  bool      `json:"protocol_ok"`
 	Draining    bool      `json:"draining"`
+	Disk        Disk      `json:"disk"`
+	DiskOK      bool      `json:"disk_ok"`
 	Note        string    `json:"note,omitempty"` // why the agent isn't claiming, when it isn't
 	Lanes       []Lane    `json:"lanes"`
 }

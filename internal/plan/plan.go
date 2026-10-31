@@ -18,7 +18,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
@@ -57,13 +56,13 @@ func Parse(out string) []Step {
 	return s
 }
 
-// Of: the whole plan for a project's node, one step per line. env is the job environment.
-func Of(bundle string, env []string) []Step {
+// Of: the whole plan for a project's node, one step per line: Needs, then what the bundle's
+// sat/requirements (req, "" if none) prints, run through mk.
+func Of(req string, mk func(string) *exec.Cmd) []Step {
 	s := Needs()
-	r := filepath.Join(bundle, "sat", "requirements")
-	if fi, err := os.Stat(r); err == nil && fi.Mode()&0o111 != 0 {
-		cmd := exec.Command(r)
-		cmd.Env, cmd.Stderr = env, os.Stderr
+	if req != "" {
+		cmd := mk(req)
+		cmd.Stderr = os.Stderr
 		out, _ := cmd.Output()
 		s = append(s, Parse(string(out))...)
 	}

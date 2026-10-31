@@ -7,7 +7,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - name: shellcheck
         run: shellcheck -S warning hub/install hub/sat-hub hub/sat-ssh-gate hub/sat-reaper hub/pre-receive node/sat node/sat-agent node/sat-call node/sat-setup node/sat-lib examples/hello/hub-hooks examples/hello/bundle/sat/job examples/hello/bundle/sat/selftest examples/hello/bundle/sat/requirements examples/hello/bundle/sat/ready examples/hello/bundle/sat/clean test/run
-      - name: end-to-end
+      - name: go vet
+        run: go vet ./...
+      - name: go test (with the end-to-end test against the bash hub)
+        run: go test -count=1 ./...
+      - name: build
+        run: CGO_ENABLED=0 go build -trimpath -o sat ./cmd/sat && ./sat version
+      - name: end-to-end (bash node)
         run: test/run
