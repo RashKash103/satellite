@@ -68,7 +68,10 @@ Until that was fixed, the node's red results were noise that sent healthy work t
 - Make `sat/selftest` run a known-green sample of the real work, including the slow or
   timing-sensitive parts, not just a build.
 - Give `claim` a pause file the hub's operator can touch, so node claims stop at once while you
-  investigate.
+  investigate. Only while you investigate: once you know which checks fail only on the node, have
+  the node skip just those (a skip list shipped in the bundle, emptied when the fix lands) and lift
+  the pause. The hub's own final check still runs them. A node paused until its fix merged sat idle
+  for over 12 hours while the fix waited in the hub's queue.
 - When a failure reproduces only on a node, fix it there: keep a node-only queue (one the hub's
   workers never read) and send the fix task to it.
 
