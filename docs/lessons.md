@@ -106,6 +106,10 @@ These apply to Claude Code; other agents have their own versions of the same iss
 - **Absolute paths break when a project directory moves.** Git keeps worktree paths absolute.
   Provide `sat/moved` (`git worktree repair` over the worktrees, then `git worktree prune`). Make
   sure the node has the latest bundle before `sat migrate`, since the hook comes from it.
+- **Not every worktree lives inside the clone.** Tools can register their own elsewhere (an issue
+  tracker kept its state branch in a worktree under its own directory in `~`). Those don't move, but
+  their `.git` file still points at the old clone. Repair them too: pass `git worktree repair` every
+  registered worktree outside the old clone that still exists (from `git worktree list --porcelain`).
 - **Build output is large.** One lane's build directory reached 40-50 GB. Set `MAX_GB` in
   `sat/defaults`, and give `sat/clean` something to remove (build output of idle lanes, leftover
   worktrees, old logs), never anything a running lane uses (`state/slotN.claim`).
