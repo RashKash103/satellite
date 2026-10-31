@@ -1,5 +1,7 @@
 # Writing a project
 
+Before you start, read [lessons.md](lessons.md): what went wrong for the first real project.
+
 A project has two parts: **hooks** that run on the hub, and a **bundle** of files the hub hands to
 nodes. [`examples/hello`](../examples/hello) is a complete one in about 40 lines; read it alongside
 this page.

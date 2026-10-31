@@ -108,6 +108,7 @@ cat ~/.local/share/sat-hello/done/job1                  # on the hub
 | [Hub setup](docs/hub.md) | install, project files, sshd, the reaper, watching it |
 | [Node setup and control](docs/node.md) | key login, the binary, `sat setup`, the `sat` command and live view, node config, updates, uninstall, migrating |
 | [Writing a project](docs/projects.md) | the hooks contract, the bundle, the job environment, a walkthrough of `examples/hello` |
+| [Lessons from the first project](docs/lessons.md) | the gotchas: sharing a queue with the hub's workers, claim filters, trusting a node's results, tools that install on first use, coding agents on a node, disk and paths |
 | [Security](docs/security.md) | what a node key can and can't do, and what you are trusting |
 | [Testing](docs/testing.md) | the end-to-end test, and testing your own project without a second machine |
 | [Roadmap](ROADMAP.md) | what is done of the Go port, and what is next |
