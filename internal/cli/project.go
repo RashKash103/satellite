@@ -19,7 +19,7 @@ import (
 	"github.com/RashKash103/satellite/internal/hub"
 	"github.com/RashKash103/satellite/internal/plan"
 	"github.com/RashKash103/satellite/internal/selfupdate"
-	"github.com/RashKash103/satellite/internal/tui"
+	"github.com/RashKash103/satellite/internal/ui"
 )
 
 func project(name, cmd string, a []string) int {
@@ -38,13 +38,14 @@ func project(name, cmd string, a []string) int {
 		return fail(err.Error())
 	}
 	st, u := p.State, p.Unit()
+	t := ui.Out()
 	switch cmd {
 	case "start":
 		return start(p)
 	case "check":
 		steps, svc := planEnv(p)
-		ok := plan.Check(os.Stdout, steps, p.Name)
-		fmt.Println(envNote(svc))
+		ok := plan.Check(t, steps, p.Name)
+		t.Println(t.Muted(envNote(svc)))
 		if !ok {
 			return 1
 		}
@@ -54,40 +55,62 @@ func project(name, cmd string, a []string) int {
 		if err := sc("stop", u).Run(); err != nil {
 			return fail("could not stop " + u + ": " + err.Error())
 		}
-		fmt.Printf("stopped %s; jobs in progress were handed back\n", p.Name)
+		t.Done("stopped %s; jobs in progress were handed back", t.Bold(p.Name))
 	case "drain":
 		if !active(u) {
-			fmt.Println("not running")
+			t.Info("not running: nothing to drain")
 			return 0
 		}
 		os.WriteFile(filepath.Join(st, "drain"), nil, 0o644)
-		fmt.Printf("draining: no new jobs; stops after: %s\n", strings.Join(claims(p), " "))
+		if ids := claims(p); len(ids) > 0 {
+			t.Println(t.Mark(ui.MarkWarn) + "draining: no new jobs; stops after: " + t.Bold(strings.Join(ids, " ")))
+		} else {
+			t.Println(t.Mark(ui.MarkWarn) + "draining: no new jobs; no job is running, so it stops now")
+		}
 	case "status":
 		status(p)
 		updateNote()
 	case "logs":
-		run(exec.Command(journalctl(), "--user", "-u", u, "-f", "-o", "cat"))
+		logs(t, u)
 	case "autostart":
 		switch {
-		case len(a) == 1 && a[0] == "on":
-			return code(run(sc("enable", u)))
-		case len(a) == 1 && a[0] == "off":
-			return code(run(sc("disable", u)))
+		case len(a) == 1 && (a[0] == "on" || a[0] == "off"):
+			verb, say := "enable", p.Name+" starts at boot"
+			if a[0] == "off" {
+				verb, say = "disable", p.Name+" no longer starts at boot"
+			}
+			if out, err := sc(verb, u).CombinedOutput(); err != nil {
+				os.Stderr.Write(out)
+				return code(err)
+			}
+			t.Done("%s", say)
+			return 0
 		}
-		return fail("autostart on|off")
+		return fail("usage: sat [PROJECT] autostart on|off")
 	case "selftest":
 		s := filepath.Join(p.Bundle, "sat", "selftest")
 		if _, err := os.Stat(s); err != nil {
-			fmt.Printf("%s has no selftest\n", p.Name)
+			t.Info("%s has no selftest", p.Name)
 			return 0
 		}
-		return code(run(agent.Command(agent.Env(p), s)))
+		if t.Color() {
+			t.Println(t.Rule(p.Name + " selftest"))
+		}
+		err := run(agent.Command(agent.Env(p), s))
+		if t.Color() {
+			if err != nil {
+				t.Println(t.Rule("") + "\n" + t.Mark(ui.MarkBad) + t.Bad(p.Name+" selftest failed") + t.Muted(" ("+err.Error()+")"))
+			} else {
+				t.Println(t.Rule("") + "\n" + t.Mark(ui.MarkOK) + p.Name + " selftest passed")
+			}
+		}
+		return code(err)
 	case "env":
 		return envCmd(p, a)
 	case "update":
 		return update(p)
 	default:
-		fmt.Print(usage)
+		failHint("no command "+cmd, "sat help lists them")
 		return 2
 	}
 	return 0
@@ -119,7 +142,8 @@ func code(err error) int {
 		return x.ExitCode()
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		e := ui.Err()
+		e.Println(e.Bad("sat:") + " " + err.Error())
 		return 1
 	}
 	return 0
@@ -137,16 +161,17 @@ func claims(p *conf.Project) []string {
 }
 
 func start(p *conf.Project) int {
+	t := ui.Out()
 	if steps, svc := planEnv(p); len(steps) > 0 {
-		plan.Check(os.Stdout, steps, p.Name)
-		fmt.Println(envNote(svc))
+		plan.Check(t, steps, p.Name)
+		t.Println(t.Muted(envNote(svc)))
 		return 1
 	}
 	os.Remove(filepath.Join(p.State, "drain"))
 	if err := sc("start", p.Unit()).Run(); err != nil {
 		return fail("could not start " + p.Unit() + ": " + err.Error())
 	}
-	fmt.Printf("started %s\n", p.Name)
+	t.Done("started %s", t.Bold(p.Name))
 	return 0
 }
 
@@ -155,10 +180,10 @@ func installLog() string { return filepath.Join(conf.Root(), "installed.log") }
 func install(p *conf.Project) int {
 	steps := planOf(p)
 	if len(steps) == 0 {
-		fmt.Println("nothing missing")
+		ui.Out().Done("nothing missing")
 		return 0
 	}
-	if !plan.Install(os.Stdout, os.Stdin, tty(), steps, logInstall(p.Name)) {
+	if !plan.Install(ui.Out(), os.Stdin, tty(), steps, logInstall(p.Name)) {
 		return 1
 	}
 	return 0
@@ -193,120 +218,30 @@ func du(dir string) int64 {
 	return n
 }
 
-func ago(t time.Time) string {
-	if t.IsZero() {
-		return "never"
-	}
-	return tui.Dur(time.Since(t)) + " ago"
-}
-
-func status(p *conf.Project) {
-	u := p.Unit()
-	state := scOut("is-active", u)
-	if state == "" {
-		state = "unknown"
-	}
-	dr := ""
-	if _, err := os.Stat(filepath.Join(p.State, "drain")); err == nil {
-		dr = ", draining"
-	}
-	fmt.Printf("%s: %s (autostart: %s)%s\n", p.Name, state, scOut("is-enabled", u), dr)
-	c := hub.For(p)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	v, err := hub.CheckProtocol(ctx, c)
-	if err == nil {
-		_, _, err = hub.Out(ctx, c, p.Name, "status")
-	}
-	cancel()
-	c.Close()
-	var pe hub.ProtocolError
-	switch {
-	case err == nil:
-		fmt.Printf("hub %s: reachable, protocol %s\n", c.Name(), v)
-	case errors.As(err, &pe):
-		fmt.Printf("hub %s: reachable, but not claiming: %v\n", c.Name(), err)
-	default:
-		fmt.Printf("hub %s: UNREACHABLE (%v)\n", c.Name(), err)
-	}
-	if s, err := agent.ReadState(p); err == nil && s.Live() {
-		if s.Note != "" {
-			fmt.Printf("agent: %s\n", s.Note)
-		}
-		for _, l := range s.Lanes {
-			if l.ID == "" {
-				continue
-			}
-			pr := ""
-			if l.Percent >= 0 {
-				pr = fmt.Sprintf(", %d%%", l.Percent)
-			}
-			if l.Progress != "" {
-				pr += " " + l.Progress
-			}
-			fmt.Printf("lane %d: %s for %s, renewed %s%s\n", l.Slot, l.ID, tui.Dur(time.Since(l.Started)), ago(l.Renewed), pr)
-		}
-	} else {
-		fs, _ := filepath.Glob(filepath.Join(p.State, "slot*.claim"))
-		for _, f := range fs {
-			if b, _ := os.ReadFile(f); len(b) > 0 {
-				fmt.Printf("lane %s: %s\n", strings.TrimSuffix(strings.TrimPrefix(filepath.Base(f), "slot"), ".claim"), strings.TrimSpace(string(b)))
-			}
-		}
-	}
-	if state != "active" {
-		if steps := planOf(p); len(steps) > 0 {
-			fmt.Printf("requirements: %d missing, so the service won't start (sat %s check)\n", len(steps), p.Name)
-		}
-	}
-	d := agent.Measure(p, true)
-	hold := ""
-	if !d.OK(1) {
-		hold = "  (not taking work: low on room)"
-	}
-	fmt.Printf("disk: %s%s\n", d.Why(), hold)
-	j := exec.Command(journalctl(), "--user", "-u", u, "-n", "8", "--no-pager", "-o", "cat")
-	j.Stdout = os.Stdout
-	j.Run()
-}
-
-func statusAll() int {
-	ps := conf.List()
-	if len(ps) == 0 {
-		fmt.Println("no projects on this node: sat setup HUB_IP PROJECT (docs/node.md)")
-		return 0
-	}
-	for i, n := range ps {
-		if i > 0 {
-			fmt.Println()
-		}
-		if p, err := conf.Load(n); err == nil {
-			status(p)
-		}
-	}
-	updateNote()
-	return 0
-}
-
-func updateNote() {
-	if t := selfupdate.Cached(Version); t != "" {
-		fmt.Printf("\nsat %s is available (you have %s): sat self-update\n", t, Version)
-	}
-}
-
 func update(p *conf.Project) int {
 	c := hub.For(p)
 	defer c.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	if _, err := hub.CheckProtocol(ctx, c); err != nil {
-		fmt.Printf("hub %s: %v\n", c.Name(), err)
+	t := ui.Out()
+	var err, perr error
+	var ch bool
+	spin(t, "fetching the bundle from "+c.Name(), func() {
+		_, perr = hub.CheckProtocol(ctx, c)
+		ch, err = bundle.Sync(ctx, c, p.Name, p.Base, nil)
+	})
+	if perr != nil {
+		t.Warned("hub %s: %v", c.Name(), perr)
 	}
-	ch, err := bundle.Sync(ctx, c, p.Name, p.Base, nil)
 	if err != nil {
 		return fail("bundle: " + err.Error())
 	}
-	fmt.Println(map[bool]string{true: "bundle updated from the hub", false: "bundle unchanged"}[ch])
-	if !plan.Check(os.Stdout, planOf(p), p.Name) {
+	if ch {
+		t.Done("bundle updated from the hub")
+	} else {
+		t.Done("bundle unchanged")
+	}
+	if !plan.Check(t, planOf(p), p.Name) {
 		return 1
 	}
 	if code := projectSetup(p); code != 0 {
@@ -314,7 +249,7 @@ func update(p *conf.Project) int {
 	}
 	selfupdate.Available(ctx, Version, false)
 	updateNote()
-	fmt.Println("updated (a running service picks a changed bundle up by itself)")
+	t.Done("updated %s", t.Muted("(a running service picks a changed bundle up by itself)"))
 	return 0
 }
 

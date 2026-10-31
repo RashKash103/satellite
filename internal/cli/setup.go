@@ -18,6 +18,7 @@ import (
 	"github.com/RashKash103/satellite/internal/conf"
 	"github.com/RashKash103/satellite/internal/hub"
 	"github.com/RashKash103/satellite/internal/plan"
+	"github.com/RashKash103/satellite/internal/ui"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -140,7 +141,15 @@ func ensureKey(name string) error {
 	return os.WriteFile(k+".pub", []byte(line), 0o644)
 }
 
-func say(s string) { fmt.Printf("\n== %s\n", s) }
+// say: a stage of setup, "== stage" plain.
+func say(s string) {
+	t := ui.Out()
+	if t.Color() {
+		t.Println("\n" + t.Accent("●") + " " + t.Heading(s))
+		return
+	}
+	t.Printf("\n== %s\n", s)
+}
 
 // The hub builds the authorized_keys line itself, so its forced command is its own path to
 // sat-ssh-gate; the node's name is bound to the key there. An older line for the same key is
@@ -189,6 +198,7 @@ func setup(a []string) int {
 	if bashLayout() {
 		return fail("this node was set up by the bash scripts (~/sat): run `sat migrate` first")
 	}
+	t := ui.Out()
 	alias := "sat-hub-" + ip
 	base := conf.Dir(proj)
 	p := &conf.Project{Name: proj, Base: base, Bundle: filepath.Join(base, "bundle"), State: filepath.Join(base, "state"),
@@ -211,7 +221,7 @@ func setup(a []string) int {
 	c := hub.For(p)
 	defer c.Close()
 	if reach(c, proj) != nil {
-		fmt.Printf("Adding the node key to the hub's authorized_keys as node %s, through your key login as %s@%s.\n", name, user, ip)
+		t.Info("Adding the node key to the hub's authorized_keys as node %s, through your key login as %s@%s.", name, user, ip)
 		pub, _ := os.Open(conf.Key() + ".pub")
 		cmd := exec.Command("ssh", "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no", "-o", "ConnectTimeout=10",
 			user+"@"+ip, "n="+name+"; "+addKey)
@@ -220,9 +230,9 @@ func setup(a []string) int {
 		pub.Close()
 		if err != nil {
 			k, _ := os.ReadFile(conf.Key() + ".pub")
-			fmt.Printf("Could not log in to %s@%s with a key. Either set up key login first (docs/node.md), or\n", user, ip)
-			fmt.Println("add this line to ~/.ssh/authorized_keys on the hub yourself, then rerun:")
-			fmt.Printf("command=\"/home/%s/.local/bin/sat-ssh-gate %s\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty %s\n", user, name, strings.TrimSpace(string(k)))
+			t.Failed("Could not log in to %s@%s with a key. Either set up key login first (docs/node.md), or", user, ip)
+			t.Println("add this line to ~/.ssh/authorized_keys on the hub yourself, then rerun:")
+			t.Println(t.Accent(fmt.Sprintf("command=\"/home/%s/.local/bin/sat-ssh-gate %s\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty %s", user, name, strings.TrimSpace(string(k)))))
 			return 1
 		}
 		c.Close()
@@ -233,15 +243,15 @@ func setup(a []string) int {
 			if err2 := reach(c, proj); err2 != nil {
 				return fail(fmt.Sprintf("the hub refuses (is %s set up there?): %v", proj, err))
 			}
-			fmt.Printf("(connecting through the system ssh: %v)\n", err)
+			t.Println(t.Muted(fmt.Sprintf("(connecting through the system ssh: %v)", err)))
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if _, err := hub.CheckProtocol(ctx, c); err != nil {
-		fmt.Printf("warning: %v. This node won't take jobs from it until that is fixed.\n", err)
+		t.Println(t.Mark(ui.MarkWarn) + t.Warn(fmt.Sprintf("warning: %v. This node won't take jobs from it until that is fixed.", err)))
 	}
 	cancel()
-	fmt.Println("hub reachable")
+	t.Done("hub reachable")
 
 	say("the sat command and service (in your home directory)")
 	if err := installSelf(); err != nil {
@@ -249,7 +259,8 @@ func setup(a []string) int {
 	}
 	os.MkdirAll(p.State, 0o755)
 	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Minute)
-	_, err := bundle.Sync(ctx, c, proj, base, nil)
+	var err error
+	spin(t, "fetching "+proj+"'s bundle from the hub", func() { _, err = bundle.Sync(ctx, c, proj, base, nil) })
 	cancel()
 	if err != nil {
 		return fail("bundle: " + err.Error())
@@ -272,26 +283,26 @@ func setup(a []string) int {
 	if p, err = conf.Load(proj); err != nil {
 		return fail(err.Error())
 	}
-	fmt.Printf("%s, %s\n", tilde(conf.Exe()), tilde(unitPath()))
+	t.Done("%s, %s", tilde(conf.Exe()), tilde(unitPath()))
 
 	say("what " + proj + " needs on this node")
 	if steps := planOf(p); len(steps) > 0 {
 		if inst {
-			if !plan.Install(os.Stdout, os.Stdin, tty(), steps, logInstall(proj)) {
-				fmt.Println("Rerun this when it is done.")
+			if !plan.Install(t, os.Stdin, tty(), steps, logInstall(proj)) {
+				t.Println("Rerun this when it is done.")
 				return 1
 			}
 		} else {
-			plan.Check(os.Stdout, steps, proj)
-			fmt.Println("\nRerun sat setup once they are installed.")
+			plan.Check(t, steps, proj)
+			t.Println("\nRerun sat setup once they are installed.")
 			return 1
 		}
 		if steps = planOf(p); len(steps) > 0 {
-			fmt.Print("Still missing:\n" + plan.Show(steps))
+			t.Print(t.Mark(ui.MarkBad) + "Still missing:\n" + plan.Show(steps))
 			return 1
 		}
 	}
-	fmt.Println("nothing missing")
+	t.Done("nothing missing")
 	if _, err := os.Stat(filepath.Join(p.Bundle, "sat", "setup")); err == nil {
 		say(proj + "'s own setup")
 		if code := projectSetup(p); code != 0 {
@@ -300,14 +311,33 @@ func setup(a []string) int {
 	}
 
 	say("done")
-	if t, _ := os.Readlink(localSat()); t != conf.Exe() {
-		fmt.Println("(add ~/.sat/bin to PATH for the sat command)")
+	var notes []string
+	if l, _ := os.Readlink(localSat()); l != conf.Exe() {
+		notes = append(notes, "add ~/.sat/bin to PATH for the sat command")
 	} else if !strings.Contains(":"+os.Getenv("PATH")+":", ":"+filepath.Dir(localSat())+":") {
-		fmt.Println("(add ~/.local/bin to PATH for the sat command)")
+		notes = append(notes, "add ~/.local/bin to PATH for the sat command")
 	}
 	if out, _ := exec.Command("loginctl", "show-user", os.Getenv("USER"), "-p", "Linger").Output(); !strings.Contains(string(out), "yes") {
-		fmt.Println("(optional: 'loginctl enable-linger' keeps the service running while you are logged out)")
+		notes = append(notes, "optional: 'loginctl enable-linger' keeps the service running while you are logged out")
 	}
-	fmt.Printf("  sat %s selftest      # the project's check of this node\n  sat %s start         # take jobs;  sat stop | drain | status | logs\n  sat %s autostart on  # optional: start at boot\n  sat                     # the live view\nSettings: %s\n", proj, proj, proj, tilde(cf))
+	if !t.Color() {
+		for _, n := range notes {
+			t.Println("(" + n + ")")
+		}
+		t.Printf("  sat %s selftest      # the project's check of this node\n  sat %s start         # take jobs;  sat stop | drain | status | logs\n  sat %s autostart on  # optional: start at boot\n  sat                     # the live view\nSettings: %s\n", proj, proj, proj, tilde(cf))
+		return 0
+	}
+	t.Done("%s is set up on this node; nothing runs until you start it", t.Bold(proj))
+	for _, n := range notes {
+		t.Println(t.Mark(ui.MarkWarn) + t.Muted(n))
+	}
+	t.Println("\n" + t.Heading("Next"))
+	t.Print(ui.Columns("  ", [][]string{
+		{t.Accent("sat " + proj + " selftest"), t.Muted("the project's check of this node")},
+		{t.Accent("sat " + proj + " start"), t.Muted("take jobs; then stop, drain, status, logs")},
+		{t.Accent("sat " + proj + " autostart on"), t.Muted("optional: start at boot")},
+		{t.Accent("sat"), t.Muted("the live view")},
+	}))
+	t.Println(t.Muted("Settings: ") + tilde(cf))
 	return 0
 }

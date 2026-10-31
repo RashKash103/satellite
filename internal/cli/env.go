@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/RashKash103/satellite/internal/conf"
+	"github.com/RashKash103/satellite/internal/ui"
 )
 
 var envKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -29,13 +30,19 @@ func envCmd(p *conf.Project, a []string) int {
 	if len(b) == 0 {
 		lines = nil
 	}
+	t := ui.Out()
 	if len(a) == 0 {
 		if len(lines) == 0 {
-			fmt.Printf("%s has no env (%s)\n", p.Name, tilde(f))
+			t.Info("%s has no env (%s)", p.Name, tilde(f))
+			return 0
 		}
-		for _, l := range lines {
-			fmt.Println(l)
+		if !t.Color() {
+			for _, l := range lines {
+				fmt.Println(l)
+			}
+			return 0
 		}
+		envTable(t, p.Name, tilde(f), lines)
 		return 0
 	}
 	if len(a) != 1 {
@@ -63,7 +70,7 @@ func envCmd(p *conf.Project, a []string) int {
 	if set {
 		out = append(out, "export "+key+"="+shq(val))
 	} else if !found {
-		fmt.Printf("%s sets no %s\n", p.Name, key)
+		t.Info("%s sets no %s", p.Name, key)
 		return 0
 	}
 	data := strings.Join(out, "\n")
@@ -73,7 +80,30 @@ func envCmd(p *conf.Project, a []string) int {
 	if err := conf.WriteAtomic(f, []byte(data), 0o644); err != nil {
 		return fail(err.Error())
 	}
-	what := map[bool]string{true: "set " + key, false: "unset " + key}[set]
-	fmt.Printf("%s for %s: it applies from the next job (running ones keep what they started with)\n", what, p.Name)
+	what := map[bool]string{true: "set " + t.Bold(key), false: "unset " + t.Bold(key)}[set]
+	t.Done("%s for %s: it applies from the next job %s", what, p.Name, t.Muted("(running ones keep what they started with)"))
 	return 0
+}
+
+// envTable: the env file as KEY and value (as written: shell syntax), other lines muted.
+func envTable(t *ui.T, name, file string, lines []string) {
+	t.Println(t.Bold(name) + t.Muted(" env · "+file))
+	var rows [][]string
+	flush := func() {
+		if len(rows) > 0 {
+			t.Print(ui.Columns("  ", rows))
+			rows = nil
+		}
+	}
+	for _, l := range lines {
+		x := strings.TrimSpace(l)
+		k, v, ok := strings.Cut(strings.TrimPrefix(x, "export "), "=")
+		if ok && envKey.MatchString(k) {
+			rows = append(rows, []string{t.Accent(k), v})
+			continue
+		}
+		flush()
+		t.Println("  " + t.Muted(l))
+	}
+	flush()
 }

@@ -6,32 +6,54 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/RashKash103/satellite/internal/conf"
 	"github.com/RashKash103/satellite/internal/selfupdate"
+	"github.com/RashKash103/satellite/internal/ui"
 )
 
 // fetchVerified downloads the release's binary beside ~/.sat/bin/sat and checks it: the sha256
-// against checksums.txt, then the build attestation when gh can.
-func fetchVerified(ctx context.Context, rel *selfupdate.Release, say func(string, ...any)) (string, error) {
-	path, err := selfupdate.Download(ctx, rel, conf.Exe())
+// against checksums.txt, then the build attestation when gh can. say gets each result (ok false:
+// not checked); t, when not nil, shows a spinner for the download.
+func fetchVerified(ctx context.Context, rel *selfupdate.Release, t *ui.T, say func(ok bool, what, result string)) (string, error) {
+	var path string
+	var err error
+	dl := func() { path, err = selfupdate.Download(ctx, rel, conf.Exe()) }
+	if t != nil {
+		spin(t, "downloading sat "+rel.Tag+" ("+selfupdate.AssetName()+")", dl)
+	} else {
+		dl()
+	}
 	if err != nil {
 		return "", err
 	}
-	say("checksum: matches the release's checksums.txt")
-	checked, why, err := selfupdate.Attest(ctx, path)
+	say(true, "checksum", "matches the release's checksums.txt")
+	var checked bool
+	var why string
+	at := func() { checked, why, err = selfupdate.Attest(ctx, path) }
+	if t != nil {
+		spin(t, "checking the build attestation", at)
+	} else {
+		at()
+	}
 	switch {
 	case err != nil:
 		os.Remove(path)
 		return "", err
 	case checked:
-		say("build attestation: verified (built from %s by its release workflow)", selfupdate.Repo)
+		say(true, "build attestation", fmt.Sprintf("verified (built from %s by its release workflow)", selfupdate.Repo))
 	default:
-		say("build attestation: not checked (%s); the checksum only shows the download is what the release lists", why)
+		say(false, "build attestation", fmt.Sprintf("not checked (%s); the checksum only shows the download is what the release lists", why))
 	}
 	return path, nil
+}
+
+// logSay: fetchVerified's results as the log lines they always were.
+func logSay(logf func(string, ...any)) func(bool, string, string) {
+	return func(_ bool, what, result string) { logf("%s: %s", what, result) }
 }
 
 func running() []string {
@@ -54,16 +76,31 @@ func selfUpdate(a []string) int {
 	}
 	ctx := context.Background()
 	pin := conf.Node()["PIN"]
-	rel, err := selfupdate.Fetch(ctx, pin)
+	t := ui.Out()
+	var rel *selfupdate.Release
+	var err error
+	spin(t, "asking GitHub for the release", func() {
+		rel, err = selfupdate.Fetch(ctx, pin)
+		if err == nil {
+			selfupdate.Available(ctx, Version, true)
+		}
+	})
 	if err != nil {
 		return fail("could not get the release: " + err.Error())
 	}
-	selfupdate.Available(ctx, Version, true)
 	if !selfupdate.Wanted(Version, rel.Tag, pin) {
-		fmt.Printf("sat %s is current (release: %s%s)\n", Version, rel.Tag, map[bool]string{true: ", pinned in ~/.sat/config", false: ""}[pin != ""])
+		t.Done("sat %s is current %s", Version, t.Muted("(release: "+rel.Tag+map[bool]string{true: ", pinned in ~/.sat/config", false: ""}[pin != ""]+")"))
 		return 0
 	}
-	fmt.Printf("sat %s (you have %s)\n\n%s\n\n", rel.Tag, Version, rel.Body)
+	if t.Color() {
+		t.Println(t.Heading("sat "+rel.Tag) + t.Muted(" (you have "+Version+")"))
+		t.Println(t.Rule("release notes"))
+		t.Println(t.Markdown(strings.TrimSpace(rel.Body)))
+		t.Println(t.Rule(""))
+		t.Println()
+	} else {
+		fmt.Printf("sat %s (you have %s)\n\n%s\n\n", rel.Tag, Version, rel.Body)
+	}
 	run := running()
 	q := "Install it?"
 	if len(run) > 0 {
@@ -72,18 +109,26 @@ func selfUpdate(a []string) int {
 	if !yes && !ask(q) {
 		return 1
 	}
-	path, err := fetchVerified(ctx, rel, func(f string, v ...any) { fmt.Printf(f+"\n", v...) })
+	path, err := fetchVerified(ctx, rel, t, func(ok bool, what, result string) {
+		if !t.Color() {
+			t.Printf("%s: %s\n", what, result)
+		} else if ok {
+			t.Println(t.Mark(ui.MarkOK) + ui.Pad(what, 18) + t.OK(result))
+		} else {
+			t.Println(t.Mark(ui.MarkWarn) + ui.Pad(what, 18) + t.Warn(result))
+		}
+	})
 	if err != nil {
 		return fail("not updated: " + err.Error())
 	}
 	defer os.Remove(path)
 	for _, n := range run {
 		os.WriteFile(filepath.Join(conf.Dir(n), "state", "drain"), nil, 0o644)
-		fmt.Printf("draining %s: waiting for its running jobs to finish\n", n)
+		t.Println(t.Mark(ui.MarkWarn) + "draining " + t.Bold(n) + ": waiting for its running jobs to finish")
 	}
-	for t := 0; len(running()) > 0; t++ {
-		if t > 0 && t%30 == 0 {
-			fmt.Printf("still draining: %v\n", running())
+	for i := 0; len(running()) > 0; i++ {
+		if i > 0 && i%30 == 0 {
+			t.Println(t.Muted(fmt.Sprintf("still draining: %v", running())))
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -91,7 +136,7 @@ func selfUpdate(a []string) int {
 		return fail("not updated: " + err.Error())
 	}
 	exec.Command(conf.Exe(), "_unit").Run()
-	fmt.Printf("sat is now %s\n", rel.Tag)
+	t.Done("sat is now %s", t.Bold(rel.Tag))
 	for _, n := range run {
 		c := exec.Command(conf.Exe(), n, "start")
 		c.Stdout, c.Stderr = os.Stdout, os.Stderr
@@ -124,7 +169,7 @@ func autoUpdate(ctx context.Context, logf func(string, ...any)) bool {
 		return false
 	}
 	logf("updating to sat %s (AUTO_UPDATE=on)", tag)
-	path, err := fetchVerified(ctx, rel, logf)
+	path, err := fetchVerified(ctx, rel, nil, logSay(logf))
 	if err == nil {
 		err = selfupdate.Swap(path, conf.Exe())
 	}

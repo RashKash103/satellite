@@ -19,6 +19,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/RashKash103/satellite/internal/ui"
 )
 
 type Step struct{ Kind, Rest string }
@@ -96,14 +98,46 @@ func Show(steps []Step) string {
 	return b.String()
 }
 
-// Check reports what is missing; true when nothing is.
+// Check reports what is missing; true when nothing is. On a styled ui.T the steps are grouped
+// by kind, each with its command.
 func Check(w io.Writer, steps []Step, project string) bool {
+	t := ui.For(w)
 	if len(steps) == 0 {
-		fmt.Fprintf(w, "%s: this node has everything it needs.\n", project)
+		t.Println(t.Mark(ui.MarkOK) + fmt.Sprintf("%s: this node has everything it needs.", project))
 		return true
 	}
-	fmt.Fprintf(w, "%s: this node is missing what these commands would install. Install them yourself, or run\n", project)
-	fmt.Fprintf(w, "`sat %s install` to see the exact steps and confirm them:\n\n%s", project, Show(steps))
+	if !t.Color() {
+		fmt.Fprintf(t, "%s: this node is missing what these commands would install. Install them yourself, or run\n", project)
+		fmt.Fprintf(t, "`sat %s install` to see the exact steps and confirm them:\n\n%s", project, Show(steps))
+		return false
+	}
+	t.Println(t.Mark(ui.MarkBad) + t.Bold(project) + ": this node is missing " + ui.Plural(len(steps), "thing", "things"))
+	for _, g := range []struct{ kind, title string }{{"apt", "packages (apt)"}, {"run", "install commands"}, {"note", "to do by hand"}} {
+		var lines []string
+		for _, s := range steps {
+			if s.Kind != g.kind {
+				continue
+			}
+			switch s.Kind {
+			case "apt":
+				lines = append(lines, t.Accent(AptLine(s.Rest)))
+			case "run":
+				lines = append(lines, t.Accent(s.Rest))
+			default:
+				lines = append(lines, s.Rest)
+			}
+		}
+		if len(lines) == 0 {
+			continue
+		}
+		t.Println()
+		t.Println("  " + t.Heading(g.title))
+		for _, l := range lines {
+			t.Println("    " + l)
+		}
+	}
+	t.Println()
+	t.Println(t.Muted("Install them yourself, or run ") + t.Accent("sat "+project+" install") + t.Muted(" to see the exact steps and confirm them."))
 	return false
 }
 
@@ -134,68 +168,114 @@ func list(s []string) string {
 // ran is called with each command before it runs (the node keeps a log of them). It returns
 // false when anything is left: nothing run, a step failed, or notes to do by hand.
 func Install(w io.Writer, in io.Reader, tty bool, steps []Step, ran func(string)) bool {
+	t := ui.For(w)
+	c := t.Color()
 	n, notes := 0, 0
-	fmt.Fprintln(w, "These steps will run, in this order:")
+	t.Println(t.Heading("These steps will run, in this order:"))
+	num := func() string {
+		if c {
+			return t.Accent(fmt.Sprintf("%2d", n)) + "  "
+		}
+		return fmt.Sprintf("%d. ", n)
+	}
+	ind := "   "
+	if c {
+		ind = "    "
+	}
 	for _, s := range steps {
 		switch s.Kind {
 		case "apt":
 			n++
-			fmt.Fprintf(w, "\n%d. %s\n", n, AptLine(s.Rest))
+			t.Printf("\n%s%s\n", num(), t.Bold(AptLine(s.Rest)))
 			if _, err := exec.LookPath("apt-get"); err != nil {
-				fmt.Fprintln(w, "   no apt-get on this machine: install these packages yourself")
+				t.Println(ind + t.Bad("no apt-get on this machine: install these packages yourself"))
 				return false
 			}
 			out, err := exec.Command("apt-get", append([]string{"-s", "install", "--no-remove"}, strings.Fields(s.Rest)...)...).CombinedOutput()
 			if err != nil {
 				for _, l := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-					fmt.Fprintf(w, "   apt: %s\n", l)
+					t.Println(ind + t.Muted("apt: "+l))
 				}
-				fmt.Fprintln(w, "   apt can't do this without removing packages, so nothing was run.")
+				t.Println(ind + t.Bad("apt can't do this without removing packages, so nothing was run."))
 				return false
 			}
 			i, u := Sim(string(out))
-			fmt.Fprintf(w, "   installs: %s\n   upgrades: %s\n   removes:  nothing (--no-remove: apt stops instead)\n", list(i), list(u))
+			if c {
+				pk := func(s []string, st func(string) string) string {
+					if len(s) == 0 {
+						return t.Muted("(none)")
+					}
+					return st(strings.Join(s, " "))
+				}
+				t.Print(ui.Columns(ind, [][]string{
+					{t.Muted("installs"), pk(i, t.OK)},
+					{t.Muted("upgrades"), pk(u, t.Warn)},
+					{t.Muted("removes"), t.OK("nothing") + t.Muted(" (--no-remove: apt stops instead)")},
+				}))
+			} else {
+				fmt.Fprintf(t, "   installs: %s\n   upgrades: %s\n   removes:  nothing (--no-remove: apt stops instead)\n", list(i), list(u))
+			}
 		case "run":
 			n++
-			fmt.Fprintf(w, "\n%d. %s\n", n, s.Rest)
+			t.Printf("\n%s%s\n", num(), t.Bold(s.Rest))
 		case "note":
 			notes++
-			fmt.Fprintf(w, "\n-  by hand (not run): %s\n", s.Rest)
+			if c {
+				t.Printf("\n%s  %s %s\n", t.Warn(" -"), t.Muted("by hand (not run):"), s.Rest)
+			} else {
+				t.Printf("\n-  by hand (not run): %s\n", s.Rest)
+			}
 		}
 	}
 	if n == 0 {
-		fmt.Fprintln(w, "(nothing to run)")
+		t.Println(t.Muted("(nothing to run)"))
 		return notes == 0
 	}
-	fmt.Fprintln(w)
+	t.Println()
 	if !tty {
-		fmt.Fprintln(w, "Not a terminal: nothing was run. Run this from a terminal to confirm.")
+		t.Println("Not a terminal: nothing was run. Run this from a terminal to confirm.")
 		return false
 	}
-	fmt.Fprintf(w, "Run these %d step(s)? [y/N] ", n)
+	q := "Run this step?"
+	if n > 1 {
+		q = fmt.Sprintf("Run these %d steps?", n)
+	}
+	t.Print(ui.Prompt(t, q))
 	a, _ := bufio.NewReader(in).ReadString('\n')
 	if a = strings.TrimSpace(a); a != "y" && a != "Y" {
-		fmt.Fprintln(w, "Nothing was run.")
+		t.Println("Nothing was run.")
 		return false
 	}
 	for _, s := range steps {
 		var cmd *exec.Cmd
+		var line string
 		switch s.Kind {
 		case "apt":
-			fmt.Fprintf(w, "+ %s\n", AptLine(s.Rest))
-			ran(AptLine(s.Rest))
+			line = AptLine(s.Rest)
 			cmd = exec.Command("sudo", append([]string{"apt-get", "install", "--no-remove"}, strings.Fields(s.Rest)...)...)
 		case "run":
-			fmt.Fprintf(w, "+ %s\n", s.Rest)
-			ran(s.Rest)
+			line = s.Rest
 			cmd = exec.Command("bash", "-c", s.Rest)
 		default:
 			continue
 		}
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, w, w
-		if cmd.Run() != nil {
+		if c {
+			t.Println(t.Accent("▶") + " " + t.Bold(line))
+		} else {
+			t.Printf("+ %s\n", line)
+		}
+		ran(line)
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, t.Raw(), t.Raw()
+		if err := cmd.Run(); err != nil {
+			t.Println(t.Mark(ui.MarkBad) + t.Bad(fmt.Sprintf("failed (%v): %s", err, line)) + "; nothing after it was run")
 			return false
 		}
+		if c {
+			t.Println(t.Mark(ui.MarkOK) + t.Muted("done"))
+		}
+	}
+	if notes > 0 {
+		t.Println(t.Mark(ui.MarkWarn) + "Still to do by hand: " + ui.Plural(notes, "note", "notes") + " above.")
 	}
 	return notes == 0
 }

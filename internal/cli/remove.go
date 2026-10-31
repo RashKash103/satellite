@@ -13,10 +13,12 @@ import (
 	"github.com/RashKash103/satellite/internal/agent"
 	"github.com/RashKash103/satellite/internal/conf"
 	"github.com/RashKash103/satellite/internal/hub"
+	"github.com/RashKash103/satellite/internal/ui"
 )
 
 // uninstall [PROJECT]: one project, or (none named, or the last one) everything sat put here.
 func uninstall(a []string) int {
+	t := ui.Out()
 	yes, a := flag(a, "--yes", "-y")
 	all := conf.List()
 	var targets []string
@@ -55,34 +57,34 @@ func uninstall(a []string) int {
 	}
 	ours := func(p string) bool { t, _ := os.Readlink(p); return t == conf.Exe() }
 
-	fmt.Println("This will:")
+	t.Println(t.Heading("This will:"))
 	for _, p := range ps {
-		fmt.Printf("- stop and disable %s, handing its running jobs back\n", p.Unit())
-		fmt.Printf("- remove %s (%s)\n", tilde(p.Base), human(du(p.Base)))
+		will(t, "stop and disable %s, handing its running jobs back", p.Unit())
+		will(t, "remove %s (%s)", tilde(p.Base), human(du(p.Base)))
 	}
 	for _, p := range hubs {
-		fmt.Printf("- ask the hub %s to forget this node's key (sat-hub --forget)\n", p.Conf["HUB"])
-		fmt.Printf("- remove the SSH alias %s from ~/.ssh/config\n", p.Conf["HUB"])
+		will(t, "ask the hub %s to forget this node's key (sat-hub --forget)", p.Conf["HUB"])
+		will(t, "remove the SSH alias %s from ~/.ssh/config", p.Conf["HUB"])
 	}
 	if last {
 		if _, err := os.Stat(conf.Root()); err == nil {
-			fmt.Printf("- remove %s: the sat binary, sat-call and the node settings\n", tilde(conf.Root()))
+			will(t, "remove %s: the sat binary, sat-call and the node settings", tilde(conf.Root()))
 		}
 		if _, err := os.Stat(unitPath()); err == nil {
-			fmt.Printf("- remove the unit %s\n", tilde(unitPath()))
+			will(t, "remove the unit %s", tilde(unitPath()))
 		}
 		if ours(localSat()) {
-			fmt.Printf("- remove %s (a link to the binary)\n", tilde(localSat()))
+			will(t, "remove %s (a link to the binary)", tilde(localSat()))
 		}
 		if _, err := os.Stat(conf.Key()); err == nil {
-			fmt.Printf("- remove the node key %s and %s.pub\n", tilde(conf.Key()), tilde(conf.Key()))
+			will(t, "remove the node key %s and %s.pub", tilde(conf.Key()), tilde(conf.Key()))
 		}
 	}
-	fmt.Println("It removes no packages.")
+	t.Println(t.OK("It removes no packages."))
 	if b, err := os.ReadFile(installLog()); err == nil && len(b) > 0 {
-		fmt.Println("`sat install` ran these; anything they installed is yours to keep or remove:")
+		t.Println("`sat install` ran these; anything they installed is yours to keep or remove:")
 		for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-			fmt.Println("  " + l)
+			t.Println("  " + t.Muted(l))
 		}
 	}
 	if len(ps) == 0 && !last {
@@ -105,17 +107,17 @@ func uninstall(a []string) int {
 		cancel()
 		c.Close()
 		if err == nil && rc == 0 {
-			fmt.Printf("hub %s: %s\n", p.Conf["HUB"], strings.TrimSpace(out))
+			t.Done("hub %s: %s", p.Conf["HUB"], strings.TrimSpace(out))
 		} else {
-			fmt.Printf("hub %s did not forget the key (%v): remove its line (it ends in sat@%s) from the hub's ~/.ssh/authorized_keys yourself\n", p.Conf["HUB"], errOr(err, rc), p.NodeName())
+			t.Warned("hub %s did not forget the key (%v): remove its line (it ends in sat@%s) from the hub's ~/.ssh/authorized_keys yourself", p.Conf["HUB"], errOr(err, rc), p.NodeName())
 		}
 		if _, err := removeAlias(sshConfig(), p.Conf["HUB"]); err != nil {
-			fmt.Println("~/.ssh/config:", err)
+			t.Failed("~/.ssh/config: %v", err)
 		}
 	}
 	for _, p := range ps {
 		if err := os.RemoveAll(p.Base); err != nil {
-			fmt.Println(err)
+			t.Failed("%v", err)
 		}
 	}
 	if last {
@@ -128,7 +130,7 @@ func uninstall(a []string) int {
 		os.Remove(conf.Key() + ".pub")
 		os.RemoveAll(conf.Root())
 	}
-	fmt.Println("done")
+	t.Done("done")
 	return 0
 }
 
@@ -142,6 +144,7 @@ func errOr(err error, rc int) error {
 // migrate moves a node set up by the bash scripts (~/sat/PROJECT, ~/sat/bin, ~/.local/bin/sat
 // and their unit) to ~/.sat. A bundle's sat/moved OLD NEW, if any, runs after its project moved.
 func migrate(a []string) int {
+	t := ui.Out()
 	yes, a := flag(a, "--yes", "-y")
 	if len(a) > 0 {
 		return fail("usage: sat migrate [--yes]")
@@ -164,34 +167,34 @@ func migrate(a []string) int {
 		scripts = append(scripts, localSat())
 	}
 	if len(names) == 0 && len(scripts) == 0 {
-		fmt.Println("nothing to migrate: no ~/sat/PROJECT here")
+		t.Info("nothing to migrate: no ~/sat/PROJECT here")
 		return 0
 	}
 	type st struct{ active, enabled bool }
 	was := map[string]st{}
-	fmt.Println("This will:")
+	t.Println(t.Heading("This will:"))
 	for _, n := range names {
 		u := "sat@" + n + ".service"
 		s := st{active(u), scOut("is-enabled", u) == "enabled"}
 		was[n] = s
 		if s.active {
-			fmt.Printf("- stop %s (its running jobs go back to the hub), and start it again afterwards\n", u)
+			will(t, "stop %s (its running jobs go back to the hub), and start it again afterwards", u)
 		}
 		if _, err := os.Stat(conf.Dir(n)); err == nil {
 			return fail(fmt.Sprintf("both %s and %s exist: move one aside first", tilde(filepath.Join(old, n)), tilde(conf.Dir(n))))
 		}
-		fmt.Printf("- move %s to %s, then run its bundle's sat/moved if it has one\n", tilde(filepath.Join(old, n)), tilde(conf.Dir(n)))
+		will(t, "move %s to %s, then run its bundle's sat/moved if it has one", tilde(filepath.Join(old, n)), tilde(conf.Dir(n)))
 	}
-	fmt.Printf("- install this binary as %s (with sat-call) and the new %s", tilde(conf.Exe()), tilde(unitPath()))
+	keep := ""
 	if len(names) > 0 {
-		fmt.Print(", keeping each project's autostart setting")
+		keep = ", keeping each project's autostart setting"
 	}
-	fmt.Println()
+	will(t, "install this binary as %s (with sat-call) and the new %s%s", tilde(conf.Exe()), tilde(unitPath()), keep)
 	for _, s := range scripts {
 		if s == localSat() {
-			fmt.Printf("- replace the bash %s with a link to the binary\n", tilde(s))
+			will(t, "replace the bash %s with a link to the binary", tilde(s))
 		} else {
-			fmt.Printf("- remove the bash node's %s\n", tilde(s))
+			will(t, "remove the bash node's %s", tilde(s))
 		}
 	}
 	if !yes && !ask("Go ahead?") {
@@ -220,21 +223,21 @@ func migrate(a []string) int {
 		os.MkdirAll(conf.Projects(), 0o755)
 		if err := os.Rename(from, to); err != nil {
 			if out, err := exec.Command("mv", from, to).CombinedOutput(); err != nil {
-				fmt.Printf("could not move %s: %s\n", from, out)
+				t.Failed("could not move %s: %s", from, out)
 				rc = 1
 				continue
 			}
 		}
-		fmt.Printf("moved %s to %s\n", tilde(from), tilde(to))
+		t.Done("moved %s to %s", tilde(from), tilde(to))
 		p, err := conf.Load(n)
 		if err != nil {
-			fmt.Println(err)
+			t.Failed("%v", err)
 			rc = 1
 			continue
 		}
 		if m := filepath.Join(p.Bundle, "sat", "moved"); isExec(m) {
 			if code(run(agent.Command(agent.Env(p), m, from, to))) != 0 {
-				fmt.Printf("%s's sat/moved failed: check %s before starting it\n", n, tilde(to))
+				t.Failed("%s's sat/moved failed: check %s before starting it", n, tilde(to))
 				rc = 1
 				continue
 			}
@@ -248,7 +251,7 @@ func migrate(a []string) int {
 	}
 	os.Remove(old) // only if empty
 	if rc == 0 {
-		fmt.Println("migrated")
+		t.Done("migrated")
 	}
 	return rc
 }
@@ -256,4 +259,13 @@ func migrate(a []string) int {
 func isExec(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && fi.Mode()&0o111 != 0
+}
+
+// will: one line of "This will:", "- " plain, a bullet when styled.
+func will(t *ui.T, f string, v ...any) {
+	if t.Color() {
+		t.Println("  " + t.Muted("•") + " " + fmt.Sprintf(f, v...))
+		return
+	}
+	t.Printf("- "+f+"\n", v...)
 }

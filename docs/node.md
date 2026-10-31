@@ -118,6 +118,19 @@ and for the node as a whole:
 | `sat migrate [--yes]` | move a bash node to `~/.sat` ([below](#moving-from-the-bash-node)) |
 | `sat version` | |
 
+`sat help COMMAND` (or `COMMAND --help`) explains one command.
+
+### Output and colour
+
+On a terminal, `sat` styles its output: colours that follow a light or dark background, marks
+(✓ done, ✗ failed, ! a warning), aligned rows, a progress bar per lane and a spinner while it waits
+for the hub or a download. Sent to a pipe or a file it prints plain text with no escape codes, the
+same lines as always, so scripts can read them. `NO_COLOR=1` (any value) turns styling off on a
+terminal too, as do `TERM=dumb` and `CLICOLOR=0`; `CLICOLOR_FORCE=1` or `FORCE_COLOR=1` turn it on
+even through a pipe (`NO_COLOR` still wins). The background is taken from `COLORFGBG` when set,
+else asked of the terminal. The service's own log, in journald and `state/agent.log`, is always
+plain; `sat logs` colours it only when showing it on a terminal.
+
 A normal shutdown is safe without a drain: systemd's stop hands running jobs back. Draining just
 avoids throwing away work in progress.
 

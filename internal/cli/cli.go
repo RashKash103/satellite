@@ -7,12 +7,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
 	"github.com/RashKash103/satellite/internal/conf"
 	"github.com/RashKash103/satellite/internal/plan"
+	"github.com/RashKash103/satellite/internal/selfupdate"
 	"github.com/RashKash103/satellite/internal/tui"
+	"github.com/RashKash103/satellite/internal/ui"
 	"golang.org/x/term"
 )
 
@@ -49,6 +52,10 @@ func Main(version string, args []string) int {
 		}
 		return tui.Run(Version, exe())
 	}
+	if h := helpFor(a[0]); h != nil && h.node && wantsHelp(a[0], a[1:]) {
+		printHelp(ui.Out(), h)
+		return 0
+	}
 	switch a[0] {
 	case "setup":
 		return setup(a[1:])
@@ -66,11 +73,9 @@ func Main(version string, args []string) int {
 	case "_unit":
 		return installUnit()
 	case "version", "--version":
-		fmt.Println("sat", Version)
-		return 0
+		return printVersion()
 	case "help", "-h", "--help":
-		fmt.Print(usage)
-		return 0
+		return help(a[1:])
 	}
 	ps := conf.List()
 	var name string
@@ -84,20 +89,40 @@ func Main(version string, args []string) int {
 	case a[0] == "status":
 		return statusAll()
 	case len(ps) == 0:
-		return fail("no projects on this node: sat setup HUB_IP PROJECT (docs/node.md)")
+		if h := helpFor(a[0]); h != nil && wantsHelp(a[0], a[1:]) {
+			printHelp(ui.Out(), h)
+			return 0
+		}
+		return failHint("no projects on this node", "sat setup HUB_IP PROJECT (docs/node.md)")
 	default:
-		return fail("which project? " + strings.Join(ps, " "))
+		if h := helpFor(a[0]); h != nil && wantsHelp(a[0], a[1:]) {
+			printHelp(ui.Out(), h)
+			return 0
+		}
+		return failHint("which project? "+strings.Join(ps, " "), "sat PROJECT "+a[0]+", with one of them as PROJECT")
 	}
 	if len(a) == 0 {
-		fmt.Print(usage)
+		printUsage(ui.Out())
 		return 2
+	}
+	if h := helpFor(a[0]); h != nil && wantsHelp(a[0], a[1:]) {
+		printHelp(ui.Out(), h)
+		return 0
 	}
 	return project(name, a[0], a[1:])
 }
 
-func fail(s string) int {
-	fmt.Fprintln(os.Stderr, s)
-	return 2
+// version: the first line is "sat VERSION", always (the agent compares it); a terminal gets
+// the build and any update too.
+func printVersion() int {
+	fmt.Println("sat", Version)
+	if t := ui.Out(); t.Color() {
+		t.Println(t.Muted(fmt.Sprintf("built with %s for %s/%s", runtime.Version(), runtime.GOOS, runtime.GOARCH)))
+		if u := selfupdate.Cached(Version); u != "" {
+			t.Println(t.Warn("↑ " + u + " is available: sat self-update"))
+		}
+	}
+	return 0
 }
 
 func exe() string {
@@ -112,14 +137,19 @@ func tty() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 
 // ask once on a terminal; never yes without one.
 func ask(q string) bool {
+	t := ui.Out()
 	if !tty() {
-		fmt.Println("Not a terminal: nothing was done. Run this from a terminal to confirm, or pass --yes.")
+		t.Println("Not a terminal: nothing was done. Run this from a terminal to confirm, or pass --yes.")
 		return false
 	}
-	fmt.Printf("%s [y/N] ", q)
+	t.Print(ui.Prompt(t, q))
 	a, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	a = strings.TrimSpace(a)
-	return a == "y" || a == "Y"
+	if a != "y" && a != "Y" {
+		t.Println(t.Muted("Nothing was done."))
+		return false
+	}
+	return true
 }
 
 func flag(a []string, names ...string) (bool, []string) {
@@ -159,19 +189,7 @@ func run(cmd *exec.Cmd) error {
 	return cmd.Run()
 }
 
-func human(n int64) string {
-	f := float64(n)
-	for _, u := range []string{"B", "KB", "MB", "GB", "TB"} {
-		if f < 1024 || u == "TB" {
-			if u == "B" {
-				return fmt.Sprintf("%d B", n)
-			}
-			return fmt.Sprintf("%.1f %s", f, u)
-		}
-		f /= 1024
-	}
-	return ""
-}
+func human(n int64) string { return ui.Bytes(n) }
 
 // tilde shortens a path under the home directory.
 func tilde(p string) string {
