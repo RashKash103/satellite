@@ -69,8 +69,9 @@ sat_install() {
   read -rp "Run these $n step(s)? [y/N] " a; [[ "$a" =~ ^[Yy]$ ]] || { echo "Nothing was run."; return 1; }
   while read -r kind rest; do
     case $kind in
-      # shellcheck disable=SC2086  # package names are words
-      apt) echo "+ $(sat_apt_line "$rest")"; sudo apt-get install --no-remove $rest || return 1 ;;
+      apt) echo "+ $(sat_apt_line "$rest")"
+           # shellcheck disable=SC2086  # package names are words
+           sudo apt-get install --no-remove $rest || return 1 ;;
       run) echo "+ $rest"; bash -c "$rest" || return 1 ;;
     esac
   done <<< "$plan"

@@ -10,7 +10,7 @@
 #   install          show those install steps (apt ones simulated, never removing), ask, run them
 #   selftest         the project's own check of this node (its sat/selftest)
 #   update           refresh this node's scripts and bundle; rerun the project's sat/setup
-projects() { ls -d "$HOME"/sat/*/ 2>/dev/null | xargs -rn1 basename | grep -vx bin; }
+projects() { local d; for d in "$HOME"/sat/*/; do [ -f "$d/config" ] && basename "$d"; done; }
 if [ -d "$HOME/sat/$1" ] && [ "$1" != bin ]; then P=$1; shift
 elif [ "$(projects | wc -l)" -eq 1 ]; then P=$(projects)
 else echo "which project? $(projects | tr '\n' ' ')" >&2; exit 2; fi

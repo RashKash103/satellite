@@ -34,7 +34,7 @@ esac
 
 proj=$1 cmd=$2; shift 2
 name_ok "$proj" && [ -f "$CONF/projects/$proj" ] || { echo "no project $proj" >&2; exit 2; }
-HOOKS= LEASE=600
+HOOKS='' LEASE=600
 . "$CONF/projects/$proj"; export SAT_PROJECT=$proj
 L=$CONF/leases/$proj; mkdir -p "$L"
 owner() { [ "$(awk '{print $1}' "$L/$2" 2>/dev/null)" = "$1" ]; }   # HOST ID

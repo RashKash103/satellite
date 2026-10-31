@@ -40,7 +40,8 @@ lane() {
     done
     wait $job; rc=$?
     case $rc in
-      0) sat-call ok "$SAT_NAME" "$id" $(cat "$res" 2>/dev/null) && log "[$slot] $id passed" ;;
+      0) # shellcheck disable=SC2046  # the result is words for `ok`
+         sat-call ok "$SAT_NAME" "$id" $(cat "$res" 2>/dev/null) && log "[$slot] $id passed" ;;
       1) tail -n +2 "$res" 2>/dev/null | sat-call fail "$SAT_NAME" "$id" "$(head -1 "$res" 2>/dev/null)"; log "[$slot] $id failed" ;;
       *) log "[$slot] $id: exit $rc, handing it back"; sat-call release "$SAT_NAME" "$id" ;;
     esac

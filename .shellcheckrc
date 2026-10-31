@@ -1,0 +1,2 @@
+# Project files, configs and bundles are sourced from paths known only at run time.
+disable=SC1090,SC1091

@@ -11,7 +11,7 @@ log() { mkdir -p "$CONF"; echo "$(date '+%m-%d %H:%M:%S') $*" >> "$CONF/gate.log
 repos=() prefix=() dirs=()
 for f in "$CONF"/projects/*; do
   [ -f "$f" ] || continue
-  GIT_REPOS= PUSH_PREFIX= RSYNC_DIRS=; . "$f"
+  GIT_REPOS='' PUSH_PREFIX='' RSYNC_DIRS=''; . "$f"
   for r in $GIT_REPOS; do repos+=("${r%/}"); prefix+=("$PUSH_PREFIX"); done
   for d in $RSYNC_DIRS; do dirs+=("${d%/}"); done
 done
