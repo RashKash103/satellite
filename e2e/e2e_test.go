@@ -367,6 +367,9 @@ func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 func read(p string) string { b, _ := os.ReadFile(p); return string(b) }
 
+// written: hello's ok hook has finished writing the done file (it creates it, then writes it).
+func written(p string) bool { return strings.Contains(read(p), " (by ") }
+
 func TestJobsPassFailCrashDrain(t *testing.T) {
 	h := newHub(t, hooks(), realGate())
 	n := newNode(t, h, "nodeA", "")
@@ -382,7 +385,7 @@ func TestJobsPassFailCrashDrain(t *testing.T) {
 	}
 	os.Remove(n.state("hold"))
 	waitFor(t, "three jobs to finish", 60*time.Second, func() bool {
-		return exists(d+"/done/good") && exists(d+"/done/crashy") && exists(d+"/failed/bad")
+		return written(d+"/done/good") && written(d+"/done/crashy") && exists(d+"/failed/bad")
 	})
 	if s := read(d + "/done/good"); !strings.Contains(s, "sha256 ") || !strings.Contains(s, "(by nodeA)") {
 		t.Errorf("passing job's result: %q", s)
@@ -493,7 +496,7 @@ func TestEnvReachesJobs(t *testing.T) {
 	}
 	h.queue("j1", "1")
 	n.agent()
-	waitFor(t, "the job", 30*time.Second, func() bool { return exists(h.hello + "/done/j1") })
+	waitFor(t, "the job", 30*time.Second, func() bool { return written(h.hello + "/done/j1") })
 	want := "foo=" + n.home + "/.x bar=a b slots=2 path=" + n.home + "/.sat/bin"
 	if s := read(h.hello + "/done/j1"); !strings.Contains(s, want) {
 		t.Errorf("job saw %q, want %q", s, want)
