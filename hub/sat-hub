@@ -12,7 +12,9 @@
 #   bundle                 -> hook: tar.gz of what the node runs for this project
 #   status                 -> leases
 # `sat-hub --reap` reaps every project (sat-reaper runs it each minute); `sat-hub --node-bundle`
-# prints the node's own scripts (this repository's node/).
+# prints the bash node's scripts (this repository's node/); `sat-hub --protocol` prints the protocol
+# this hub speaks (the Go node won't claim from a hub that doesn't speak its own); `sat-hub --forget`,
+# through the gate, removes the calling node's own key line(s) from ~/.ssh/authorized_keys.
 CONF=${SAT_CONF:-$HOME/.config/sat}
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 name_ok() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; }
@@ -27,7 +29,24 @@ reap() {   # PROJECT
     "$HOOKS" requeue "$id" "lease expired ($h silent for $LEASE s)"
   done
 }
+# Only lines whose forced command is `…sat-ssh-gate NODE"` for the calling node (SAT_NODE, set by the
+# gate from the key itself) go; every other line is kept as it is. Rewritten beside, then renamed.
+forget() {
+  local a=$HOME/.ssh/authorized_keys n=${SAT_NODE:-} re line hit=0
+  [ -n "$n" ] || { echo "--forget works only through sat-ssh-gate, for the calling node's own key" >&2; return 2; }
+  name_ok "$n" || { echo "refused: unsafe node name" >&2; return 2; }
+  re="^command=\"([^\"]*/)?sat-ssh-gate ${n//./\\.}\"[, ]"
+  [ -f "$a" ] || { echo "no $a" >&2; return 1; }
+  ( umask 077; : > "$a.sat-forget" ) || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ $line =~ $re ]]; then hit=$((hit+1)); else printf '%s\n' "$line"; fi
+  done < "$a" > "$a.sat-forget"
+  [ $hit -gt 0 ] || { rm -f "$a.sat-forget"; echo "no key line for node $n" >&2; return 1; }
+  mv "$a.sat-forget" "$a" && echo "removed $hit key line(s) for node $n"
+}
 case "$1" in
+  --protocol) echo 1; exit 0 ;;   # bump with any change old nodes or hubs can't follow
+  --forget) forget; exit ;;
   --reap) for f in "$CONF"/projects/*; do [ -f "$f" ] && reap "$(basename "$f")"; done; exit 0 ;;
   --node-bundle) tar -C "$ROOT/node" -czf - . ; exit 0 ;;
 esac

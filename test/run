@@ -48,6 +48,26 @@ check "lets sat-hub through" gate "sat-hub hello status"
 check "refuses a key with no node name" bash -c '! AS="" gate "sat-hub hello status"'
 check "a key can't act as another node" bash -c '! gate "sat-hub hello claim nodeB 1"'
 
+echo "== protocol and --forget"
+check "the hub states its protocol" test "$(gate sat-hub --protocol)" = 1
+a=$HOME/.ssh/authorized_keys; mkdir -p "$HOME/.ssh"
+cat > "$a" <<KEYS
+ssh-ed25519 AAAAC3own rony@laptop
+command="$HOME/.local/bin/sat-ssh-gate nodeA",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 AAAAC3a sat@nodeA
+command="$HOME/.local/bin/sat-ssh-gate nodeAB",no-pty ssh-ed25519 AAAAC3ab sat@nodeAB
+command="$HOME/.local/bin/sat-ssh-gate nodeB",no-pty ssh-ed25519 AAAAC3b sat@nodeB
+command="/elsewhere/sat-ssh-gate nodeA" ssh-ed25519 AAAAC3a2 sat@nodeA
+KEYS
+keep=$(grep -v 'gate nodeA"' "$a")
+check "--forget refuses without the gate" bash -c '! "$ROOT/hub/sat-hub" --forget'
+check "--forget refuses an unsafe name" bash -c '! SAT_NODE="a b" "$ROOT/hub/sat-hub" --forget'
+check "--forget removes the caller's own key lines" gate sat-hub --forget
+check "and touches no other line" test "$(cat "$a")" = "$keep"
+check "a second --forget finds nothing and says so" bash -c '! gate sat-hub --forget'
+check "and leaves the file alone" test "$(cat "$a")" = "$keep"
+check "authorized_keys stays private" test "$(stat -c %a "$a")" = 600
+rm -rf "$HOME/.ssh"
+
 echo "== push guard"
 git init -q "$T/work"; git -C "$T/work" -c user.name=t -c user.email=t@t commit -q --allow-empty -m x
 export GIT_SSH_COMMAND="$T/bin/ssh"
