@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -65,10 +66,13 @@ func newHub(t *testing.T, hooks, gate string) *hub {
 	signer, _ := ssh.NewSignerFromKey(priv)
 	h.host = signer.PublicKey()
 	cfg := &ssh.ServerConfig{PublicKeyCallback: func(_ ssh.ConnMetadata, k ssh.PublicKey) (*ssh.Permissions, error) {
+		if args, ok := h.authorized(k); ok {
+			return &ssh.Permissions{Extensions: map[string]string{"gate": args}}, nil
+		}
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		if n, ok := h.keys[string(k.Marshal())]; ok {
-			return &ssh.Permissions{Extensions: map[string]string{"node": n}}, nil
+			return &ssh.Permissions{Extensions: map[string]string{"gate": n}}, nil
 		}
 		return nil, errors.New("unknown key")
 	}}
@@ -91,6 +95,31 @@ func newHub(t *testing.T, hooks, gate string) *hub {
 	return h
 }
 
+// authorized: as sshd, a line for the key in the hub's authorized_keys decides the gate's arguments
+// (what follows sat-ssh-gate in its forced command). Without one, the key's binding in h.keys does.
+func (h *hub) authorized(k ssh.PublicKey) (string, bool) {
+	b, _ := os.ReadFile(filepath.Join(h.home, ".ssh", "authorized_keys"))
+	for len(b) > 0 {
+		pk, _, opts, rest, err := ssh.ParseAuthorizedKey(b)
+		if err != nil {
+			return "", false
+		}
+		b = rest
+		if !bytes.Equal(pk.Marshal(), k.Marshal()) {
+			continue
+		}
+		for _, o := range opts {
+			if c, ok := strings.CutPrefix(o, "command="); ok {
+				w := strings.Fields(strings.Trim(c, `"`))
+				if len(w) > 0 && strings.HasSuffix(w[0], "sat-ssh-gate") {
+					return strings.Join(w[1:], " "), true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
 func (h *hub) env(extra ...string) []string {
 	return append([]string{"HOME=" + h.home, "SAT_CONF=" + h.conf, "HELLO_DIR=" + h.hello, "PATH=" + os.Getenv("PATH")}, extra...)
 }
@@ -101,7 +130,7 @@ func (h *hub) serve(c net.Conn, cfg *ssh.ServerConfig) {
 		return
 	}
 	go ssh.DiscardRequests(reqs)
-	node := sc.Permissions.Extensions["node"]
+	gargs := append([]string{h.gate}, strings.Fields(sc.Permissions.Extensions["gate"])...)
 	for nc := range chans {
 		if nc.ChannelType() != "session" {
 			nc.Reject(ssh.UnknownChannelType, "no")
@@ -121,7 +150,7 @@ func (h *hub) serve(c net.Conn, cfg *ssh.ServerConfig) {
 				var p struct{ Command string }
 				ssh.Unmarshal(r.Payload, &p)
 				r.Reply(true, nil)
-				cmd := exec.Command("bash", h.gate, node)
+				cmd := exec.Command("bash", gargs...)
 				cmd.Env = h.env("SSH_ORIGINAL_COMMAND=" + p.Command)
 				in, _ := cmd.StdinPipe()
 				cmd.Stdout, cmd.Stderr = ch, ch.Stderr()
@@ -177,10 +206,15 @@ func hooks() string    { return filepath.Join(root(), "examples", "hello", "hub-
 
 // gateWith: a copy of the gate beside a sat-hub that answers --protocol with script.
 func gateWith(t *testing.T, protocol string) string {
+	return gateBefore(t, "[ \"$1\" = --protocol ] && { "+protocol+"; }")
+}
+
+// gateBefore: a copy of the gate beside a sat-hub that runs script before the real one.
+func gateBefore(t *testing.T, script string) string {
 	d := t.TempDir()
 	b, _ := os.ReadFile(realGate())
 	os.WriteFile(filepath.Join(d, "sat-ssh-gate"), b, 0o755)
-	os.WriteFile(filepath.Join(d, "sat-hub"), []byte(fmt.Sprintf("#!/usr/bin/env bash\n[ \"$1\" = --protocol ] && { %s; }\nexec %s \"$@\"\n", protocol, filepath.Join(root(), "hub", "sat-hub"))), 0o755)
+	os.WriteFile(filepath.Join(d, "sat-hub"), []byte(fmt.Sprintf("#!/usr/bin/env bash\n%s\nexec %s \"$@\"\n", script, filepath.Join(root(), "hub", "sat-hub"))), 0o755)
 	return filepath.Join(d, "sat-ssh-gate")
 }
 
@@ -228,6 +262,42 @@ func newNode(t *testing.T, h *hub, name, config string) *node {
 	_, port, _ := net.SplitHostPort(h.addr)
 	os.WriteFile(filepath.Join(base, "config"), []byte(fmt.Sprintf("HUB=sat-hub-127.0.0.1\nHUB_IP=127.0.0.1\nHUB_PORT=%s\nHUB_USER=hub\nSAT_NAME=%s   # bound to this node's key\nSLOTS=2\nMIN_FREE_GB=0\nMIN_FREE_PCT=0\n%s", port, name, config)), 0o644)
 	return n
+}
+
+// unbind: the key reaches the hub only through a line in its authorized_keys.
+func (n *node) unbind() {
+	k, _, _, _, _ := ssh.ParseAuthorizedKey([]byte(n.pub))
+	n.h.mu.Lock()
+	delete(n.h.keys, string(k.Marshal()))
+	n.h.mu.Unlock()
+}
+
+// call runs one command on the hub with the node's key, as the node's own calls do.
+func (n *node) call(cmd string) (string, int) {
+	n.t.Helper()
+	signer, err := ssh.ParsePrivateKey([]byte(read(filepath.Join(n.home, ".ssh", "sat_ed25519"))))
+	if err != nil {
+		n.t.Fatal(err)
+	}
+	c, err := ssh.Dial("tcp", n.h.addr, &ssh.ClientConfig{User: "hub", Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)}, HostKeyCallback: ssh.FixedHostKey(n.h.host)})
+	if err != nil {
+		return err.Error(), 255
+	}
+	defer c.Close()
+	s, err := c.NewSession()
+	if err != nil {
+		n.t.Fatal(err)
+	}
+	defer s.Close()
+	out, err := s.CombinedOutput(cmd)
+	var x *ssh.ExitError
+	if errors.As(err, &x) {
+		return string(out), x.ExitStatus()
+	}
+	if err != nil {
+		return string(out) + err.Error(), 255
+	}
+	return string(out), 0
 }
 
 func (n *node) base() string          { return filepath.Join(n.home, ".sat", "projects", "hello") }
@@ -631,5 +701,153 @@ func TestMigrate(t *testing.T) {
 	}
 	if out, _ := n.sat("hello", "status"); !strings.Contains(out, "reachable, protocol 1") {
 		t.Errorf("status after the move:\n%s", out)
+	}
+}
+
+// A key line may list the projects it serves: other projects' sat-hub, repositories and directories
+// stay shut to it, a second `sat setup` adds its project to the line (through the user's own login,
+// a shim here), and `sat uninstall PROJECT` has the hub drop it again; the last uninstall removes the
+// line. Other lines, a legacy one among them, are never touched.
+func TestKeysLimitedToProjects(t *testing.T) {
+	name := conf.ShortHost()
+	h := newHub(t, hooks(), realGate())
+	n := newNode(t, h, name, "SLOTS=1\n")
+	n.unbind()
+	pub := n.pub + " sat@" + name
+	os.WriteFile(filepath.Join(n.home, ".ssh", "sat_ed25519.pub"), []byte(pub+"\n"), 0o644)
+	other := filepath.Join(h.dir, "hello2")
+	os.MkdirAll(other+"/queue", 0o755)
+	repo := filepath.Join(h.dir, "repo2.git")
+	if out, err := exec.Command("git", "init", "-q", "--bare", repo).CombinedOutput(); err != nil {
+		t.Fatal(string(out))
+	}
+	w := filepath.Join(h.dir, "hooks2")
+	os.WriteFile(w, []byte("#!/bin/sh\nHELLO_DIR="+other+" exec "+hooks()+" \"$@\"\n"), 0o755)
+	os.WriteFile(filepath.Join(h.conf, "projects", "hello2"), []byte("HOOKS="+w+"\nLEASE=600\nGIT_REPOS="+repo+"\nRSYNC_DIRS="+other+"\n"), 0o644)
+	gl := filepath.Join(h.home, ".local", "bin")
+	os.MkdirAll(gl, 0o755)
+	os.Symlink(realGate(), filepath.Join(gl, "sat-ssh-gate"))
+	ak := filepath.Join(h.home, ".ssh", "authorized_keys")
+	os.MkdirAll(filepath.Dir(ak), 0o700)
+	others := "ssh-ed25519 AAAAC3own someone@laptop\ncommand=\"/x/sat-ssh-gate nodeB\",no-pty ssh-ed25519 AAAAC3b sat@nodeB\n"
+	opts := ",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty "
+	os.WriteFile(ak, []byte(others+"command=\""+gl+"/sat-ssh-gate "+name+" hello\""+opts+pub+"\n"), 0o600)
+	shut := func(cmd string) {
+		t.Helper()
+		if out, rc := n.call(cmd); rc == 0 || !strings.Contains(out, "refused") {
+			t.Errorf("%s with a key for hello: exit %d\n%s", cmd, rc, out)
+		}
+	}
+	open := func(cmd string) {
+		t.Helper()
+		if out, _ := n.call(cmd); strings.Contains(out, "refused") {
+			t.Errorf("%s refused:\n%s", cmd, out)
+		}
+	}
+	if out, rc := n.call("sat-hub hello status"); rc != 0 {
+		t.Fatalf("its own project: exit %d\n%s", rc, out)
+	}
+	shut("sat-hub hello2 status")
+	shut("git-upload-pack '" + repo + "'")
+	shut("rsync --server --sender -logDtpre.iLsfxCIvu . " + other)
+	if l := read(filepath.Join(h.conf, "gate.log")); !strings.Contains(l, "refused ("+name+", key for hello): sat-hub hello2 status") {
+		t.Errorf("gate.log:\n%s", l)
+	}
+
+	// sat setup for hello2: its key can't reach hello2, so it adds hello2 through the user's login.
+	shim := filepath.Join(n.home, "shim")
+	os.MkdirAll(shim, 0o755)
+	os.WriteFile(filepath.Join(shim, "ssh"), []byte(fmt.Sprintf(`#!/usr/bin/env bash
+while [ $# -gt 0 ]; do case $1 in -o|-i|-p|-l) shift 2 ;; -*) shift ;; *) break ;; esac; done
+shift; HOME=%s exec bash -c "$*"
+`, h.home)), 0o755)
+	n.extraEnv = []string{"PATH=" + shim + ":" + os.Getenv("PATH")}
+	_, port, _ := net.SplitHostPort(h.addr)
+	os.WriteFile(filepath.Join(n.home, ".sat", "config"), []byte("HUB_PORT="+port+"\n"), 0o644)
+	out, err := n.sat("setup", "127.0.0.1", "hello2", "hub")
+	if err != nil || !strings.Contains(out, "Adding the node key") {
+		t.Fatalf("setup hello2: %v\n%s", err, out)
+	}
+	both := others + "command=\"" + gl + "/sat-ssh-gate " + name + " hello,hello2\"" + opts + pub + "\n"
+	if read(ak) != both {
+		t.Fatalf("authorized_keys after setup:\n%s", read(ak))
+	}
+	open("sat-hub hello2 status")
+	open("git-upload-pack '" + repo + "'")
+	out, _ = n.call("sat-hub --nodes")
+	if !strings.Contains(out, "hello2") || !strings.Contains(out, "hello,hello2") || strings.Contains(out, "nodeB") {
+		t.Errorf("its own rows:\n%s", out)
+	}
+	if out, _ = n.sat("setup", "127.0.0.1", "hello2", "hub"); read(ak) != both {
+		t.Fatalf("a second setup changed the line:\n%s\n%s", read(ak), out)
+	}
+
+	out, err = n.sat("uninstall", "--yes", "hello2")
+	if err != nil || !strings.Contains(out, "drop hello2 from this node's key") || !strings.Contains(out, "dropped hello2") {
+		t.Fatalf("uninstall hello2: %v\n%s", err, out)
+	}
+	if want := others + "command=\"" + gl + "/sat-ssh-gate " + name + " hello\"" + opts + pub + "\n"; read(ak) != want {
+		t.Fatalf("authorized_keys after uninstall hello2:\n%s", read(ak))
+	}
+	shut("sat-hub hello2 status")
+	if out, err = n.sat("uninstall", "--yes"); err != nil {
+		t.Fatalf("uninstall: %v\n%s", err, out)
+	}
+	if read(ak) != others {
+		t.Errorf("authorized_keys after the last uninstall:\n%s", read(ak))
+	}
+}
+
+// MAX_PER_NODE in the project file: a node with two lanes holds one job at a time; the idle lane
+// gets nothing, which is not an error. sat-hub PROJECT nodes shows it (its key is bound by the test
+// server, not by a line in authorized_keys: "none").
+func TestHubLimitsJobsPerNode(t *testing.T) {
+	job := "#!/usr/bin/env bash\ntouch \"$SAT_BASE/state/ran-$1\"\nsleep 4\n"
+	hk := helloCopy(t, map[string]string{"sat/job": job})
+	h := newHub(t, hk, realGate())
+	f, _ := os.OpenFile(filepath.Join(h.conf, "projects", "hello"), os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString("MAX_PER_NODE=1\n")
+	f.Close()
+	n := newNode(t, h, "nodeA", "SLOTS=2\n")
+	h.queue("j1", "1")
+	h.queue("j2", "1")
+	a := n.agent()
+	waitFor(t, "a job to start", 20*time.Second, func() bool { return len(h.leases()) > 0 })
+	c := exec.Command("bash", filepath.Join(root(), "hub", "sat-hub"), "hello", "nodes")
+	c.Env = h.env()
+	out, _ := c.Output()
+	if !regexp.MustCompile(`(?m)^hello +nodeA +\d+s +1 +none$`).Match(out) {
+		t.Errorf("nodes:\n%s", out)
+	}
+	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
+		if l := h.leases(); len(l) > 1 {
+			t.Fatalf("two leases at once: %v", l)
+		}
+	}
+	waitFor(t, "both jobs to pass", 40*time.Second, func() bool { return exists(h.hello+"/done/j1") && exists(h.hello+"/done/j2") })
+	if strings.Contains(a.out.String(), "unreachable") {
+		t.Errorf("an empty claim was taken for an error:\n%s", a.out.String())
+	}
+}
+
+// A hub older than project lists has no --nodes, and its --forget ignores a project and removes the
+// whole line: `sat uninstall PROJECT` with other projects left on that hub must not ask it.
+func TestUninstallOneProjectOldHub(t *testing.T) {
+	h := newHub(t, hooks(), gateBefore(t, `case "$1" in --nodes) echo "no project --nodes" >&2; exit 2 ;; --forget) shift $#; set -- --forget ;; esac`))
+	n := newNode(t, h, "nodeA", "")
+	other := filepath.Join(n.home, ".sat", "projects", "hello2")
+	os.MkdirAll(filepath.Join(other, "state"), 0o755)
+	os.WriteFile(filepath.Join(other, "config"), []byte(read(filepath.Join(n.base(), "config"))), 0o644)
+	os.WriteFile(filepath.Join(h.conf, "projects", "hello2"), []byte("HOOKS="+hooks()+"\nLEASE=600\n"), 0o644)
+	ak := filepath.Join(h.home, ".ssh", "authorized_keys")
+	os.MkdirAll(filepath.Dir(ak), 0o700)
+	line := "command=\"/x/sat-ssh-gate nodeA hello,hello2\",no-pty " + n.pub + "\n"
+	os.WriteFile(ak, []byte(line), 0o600)
+	out, err := n.sat("uninstall", "--yes", "hello2")
+	if err != nil || !strings.Contains(out, "predates keys limited to projects") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if read(ak) != line {
+		t.Errorf("authorized_keys:\n%s", read(ak))
 	}
 }

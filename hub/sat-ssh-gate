@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # sat-ssh-gate: forced command for node keys in ~/.ssh/authorized_keys:
-#   command="<this file> NODE",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 ...
-# NODE is the node name bound to the key: sat-hub lets that key act only as NODE (SAT_NODE).
-# Lets through only what the project files under ~/.config/sat/projects/ allow:
+#   command="<this file> NODE PROJECT[,PROJECT...]",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 ...
+# NODE is the node name bound to the key: sat-hub lets that key act only as NODE (SAT_NODE). The
+# list names the projects the key serves (SAT_KEY_PROJECTS): only their files are loaded, and
+# sat-hub refuses any other project. A line with no list (`<this file> NODE`, the legacy form)
+# serves every project.
+# Lets through only what those project files under ~/.config/sat/projects/ allow:
 #   fetching GIT_REPOS, pushing to them under PUSH_PREFIX (checked by hub/pre-receive), copying
 #   RSYNC_DIRS out, and sat-hub. Everything else is refused and logged.
 CONF=${SAT_CONF:-$HOME/.config/sat}
@@ -12,29 +15,37 @@ log() { mkdir -p "$CONF"; echo "$(date '+%m-%d %H:%M:%S') $*" >> "$CONF/gate.log
 if ! [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]]; then
   log "refused (key not bound to a node name): $c"; echo "refused: this key has no node name (rerun sat-setup)" >&2; exit 1
 fi
-export SAT_NODE=$1
-repos=() prefix=() dirs=()
+if [ $# -gt 2 ] || ! [[ "${2-x}" =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]]; then
+  log "refused ($1, bad project list on its key line: ${*:2}): $c"; echo "refused: this key's project list is malformed" >&2; exit 1
+fi
+export SAT_NODE=$1 SAT_KEY_PROJECTS=${2:-}
+# seen PROJECT: the node's last call for it (sat-hub PROJECT nodes shows it).
+seen() { mkdir -p "$CONF/seen/$1" 2>/dev/null && touch "$CONF/seen/$1/$SAT_NODE" 2>/dev/null; }
+repos=() prefix=() rproj=() dirs=() dproj=()
 for f in "$CONF"/projects/*; do
   [ -f "$f" ] || continue
+  p=$(basename "$f")
+  [ -z "$SAT_KEY_PROJECTS" ] || [[ ",$SAT_KEY_PROJECTS," == *",$p,"* ]] || continue
   GIT_REPOS='' PUSH_PREFIX='' RSYNC_DIRS=''; . "$f"
-  for r in $GIT_REPOS; do repos+=("${r%/}"); prefix+=("$PUSH_PREFIX"); done
-  for d in $RSYNC_DIRS; do dirs+=("${d%/}"); done
+  for r in $GIT_REPOS; do repos+=("${r%/}"); prefix+=("$PUSH_PREFIX"); rproj+=("$p"); done
+  for d in $RSYNC_DIRS; do dirs+=("${d%/}"); dproj+=("$p"); done
 done
 for i in "${!repos[@]}"; do
   r=${repos[$i]}
   case "$c" in
-    "git-upload-pack '$r'"|"git-upload-pack '$r/'") exec git-upload-pack "$r" ;;
+    "git-upload-pack '$r'"|"git-upload-pack '$r/'") seen "${rproj[$i]}"; exec git-upload-pack "$r" ;;
     "git-receive-pack '$r'"|"git-receive-pack '$r/'")
       [ -n "${prefix[$i]}" ] || break
-      export SAT_PUSH_PREFIX=${prefix[$i]}; exec git-receive-pack "$r" ;;
+      seen "${rproj[$i]}"; export SAT_PUSH_PREFIX=${prefix[$i]}; exec git-receive-pack "$r" ;;
   esac
 done
-# Arguments go to sat-hub as words, never through a shell; it and the hooks check every name.
+# Arguments go to sat-hub as words, never through a shell; it and the hooks check every name (and
+# sat-hub refuses projects outside the key's list).
 if [[ "$c" =~ ^sat-hub\ [[:print:]]*$ ]]; then
   read -ra a <<< "$c"; exec "$HERE/sat-hub" "${a[@]:1}"
 fi
 if [[ "$c" =~ ^rsync\ --server\ --sender\ [-A-Za-z0-9.=,\ ]*\ \.\ (/[A-Za-z0-9._/-]+)$ ]]; then
   want=${BASH_REMATCH[1]%/}
-  for d in "${dirs[@]}"; do [ "$want" = "$d" ] && { read -ra a <<< "$c"; exec "${a[@]}"; }; done
+  for i in "${!dirs[@]}"; do [ "$want" = "${dirs[$i]}" ] && { seen "${dproj[$i]}"; read -ra a <<< "$c"; exec "${a[@]}"; }; done
 fi
-log "refused ($SAT_NODE): $c"; echo "refused" >&2; exit 1
+log "refused ($SAT_NODE${SAT_KEY_PROJECTS:+, key for $SAT_KEY_PROJECTS}): $c"; echo "refused" >&2; exit 1

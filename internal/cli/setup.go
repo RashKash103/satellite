@@ -152,12 +152,18 @@ func say(s string) {
 }
 
 // The hub builds the authorized_keys line itself, so its forced command is its own path to
-// sat-ssh-gate; the node's name is bound to the key there. An older line for the same key is
-// replaced, and an empty or malformed key is refused (never filter on an empty key).
+// sat-ssh-gate; the node's name is bound to the key there, and the projects it serves are listed
+// after it. An older line for the same key is replaced, keeping its projects and adding this one; a
+// line without a list (the legacy form: every project) stays without one. An empty or malformed key
+// is refused (never filter on an empty key).
 const addKey = `g=$HOME/.local/bin/sat-ssh-gate; [ -x "$g" ] || { echo "the hub has no $g: run hub/install in its satellite checkout" >&2; exit 3; }
      read -r k; kb=$(echo "$k" | cut -d" " -f2); a=$HOME/.ssh/authorized_keys
      case "$kb" in AAAA?*) ;; *) echo "not a public key: $k" >&2; exit 4 ;; esac
-     mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch "$a" && { grep -vF "$kb" "$a"; echo "command=\"$g $n\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty $k"; } > "$a.sat-new" \
+     mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch "$a" || exit 5
+     l=$p; o=$(grep -F "$kb" "$a" | grep -m1 '^command="[^"]*sat-ssh-gate ' | sed 's/^command="\([^"]*\)".*/\1/')
+     ol=$(echo "$o" | cut -d" " -f3)
+     if [ -n "$o" ] && [ -z "$ol" ]; then l=; elif [ -n "$ol" ]; then case ",$ol," in *",$p,"*) l=$ol ;; *) l=$ol,$p ;; esac; fi
+     { grep -vF "$kb" "$a"; echo "command=\"$g $n${l:+ $l}\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty $k"; } > "$a.sat-new" \
        && chmod 600 "$a.sat-new" && mv "$a.sat-new" "$a"`
 
 func reach(c hub.Caller, proj string) error {
@@ -224,7 +230,7 @@ func setup(a []string) int {
 		t.Info("Adding the node key to the hub's authorized_keys as node %s, through your key login as %s@%s.", name, user, ip)
 		pub, _ := os.Open(conf.Key() + ".pub")
 		cmd := exec.Command("ssh", "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no", "-o", "ConnectTimeout=10",
-			user+"@"+ip, "n="+name+"; "+addKey)
+			user+"@"+ip, "n="+name+"; p="+proj+"; "+addKey)
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = pub, os.Stdout, os.Stderr
 		err := cmd.Run()
 		pub.Close()
@@ -232,7 +238,8 @@ func setup(a []string) int {
 			k, _ := os.ReadFile(conf.Key() + ".pub")
 			t.Failed("Could not log in to %s@%s with a key. Either set up key login first (docs/node.md), or", user, ip)
 			t.Println("add this line to ~/.ssh/authorized_keys on the hub yourself, then rerun:")
-			t.Println(t.Accent(fmt.Sprintf("command=\"/home/%s/.local/bin/sat-ssh-gate %s\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty %s", user, name, strings.TrimSpace(string(k)))))
+			t.Println(t.Accent(fmt.Sprintf("command=\"/home/%s/.local/bin/sat-ssh-gate %s %s\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty %s", user, name, proj, strings.TrimSpace(string(k)))))
+			t.Println("(or add " + proj + " to the list after " + name + " on the line it already has, separated by a comma)")
 			return 1
 		}
 		c.Close()

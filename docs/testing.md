@@ -29,6 +29,13 @@ a fake `systemctl` that only records what it is asked. It checks:
 - the exec transport (the system ssh, through a shim);
 - `sat uninstall`: asks, lists what it removes and what `install` ran, has the hub forget only this
   node's key line, removes the rest;
+- keys limited to projects (the test server reads the hub's `authorized_keys` for the gate's
+  arguments, as sshd does): another project's `sat-hub`, repository and directory refused and
+  logged; a second `sat setup` adding its project to the existing line; `sat uninstall PROJECT`
+  dropping it again, then the last uninstall removing the line, other lines untouched; and against
+  a hub too old for that, `sat uninstall PROJECT` not asking it;
+- `MAX_PER_NODE`: a node with two lanes holding one job at a time, without errors, and
+  `sat-hub PROJECT nodes` showing it;
 - `sat migrate` from the bash layout, with the bundle's `sat/moved`.
 
 It takes about 40 seconds and needs bash and coreutils. Timings are shortened with
@@ -42,6 +49,14 @@ as `SSH_ORIGINAL_COMMAND`. It checks:
 - the gate's refusals, that it runs no shell on what it is sent, and that a key acts only as its
   own node;
 - `sat-hub --protocol`, and `sat-hub --forget`: only through the gate, only the caller's own lines;
+- keys limited to projects: another project's `sat-hub`, repository and directory refused and
+  logged, a malformed list refused, a legacy key (no list) reaching every project; `--forget
+  PROJECT` dropping one project, then the line with the last, leaving legacy lines alone;
+- the key line `sat setup` writes (its script, run as the user's own login): a new key listed for
+  its project, a second project added to the same line, a legacy line kept legacy, an empty key
+  refused;
+- `MAX_PER_NODE` and `MAX_TOTAL`: an empty claim at the limit, not an error; `sat-hub PROJECT
+  nodes` and `--nodes`, and a node seeing only its own rows through the gate;
 - the push guard: pushes under the prefix pass, others are refused;
 - leases: only the owner can renew or report a job, and a silent lease is reaped back;
 - the bash node agent running `examples/hello` with two lanes: the disk floor, `sat/ready`, a job

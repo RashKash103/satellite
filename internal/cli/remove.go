@@ -62,6 +62,11 @@ func uninstall(a []string) int {
 		will(t, "stop and disable %s, handing its running jobs back", p.Unit())
 		will(t, "remove %s (%s)", tilde(p.Base), human(du(p.Base)))
 	}
+	for _, p := range ps {
+		if keep[p.Conf["HUB"]] {
+			will(t, "ask the hub %s to drop %s from this node's key (sat-hub --forget %s)", p.Conf["HUB"], p.Name, p.Name)
+		}
+	}
 	for _, p := range hubs {
 		will(t, "ask the hub %s to forget this node's key (sat-hub --forget)", p.Conf["HUB"])
 		will(t, "remove the SSH alias %s from ~/.ssh/config", p.Conf["HUB"])
@@ -100,6 +105,11 @@ func uninstall(a []string) int {
 		c.Close()
 		sc("disable", p.Unit()).Run()
 	}
+	for _, p := range ps {
+		if keep[p.Conf["HUB"]] {
+			forgetProject(t, p)
+		}
+	}
 	for _, p := range hubs {
 		c := hub.For(p)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -132,6 +142,26 @@ func uninstall(a []string) int {
 	}
 	t.Done("done")
 	return 0
+}
+
+// forgetProject: the node keeps other projects on this hub, so only this one leaves its key line.
+// A hub without `sat-hub --nodes` predates project lists, and its --forget would take the whole line:
+// it is not asked.
+func forgetProject(t *ui.T, p *conf.Project) {
+	c := hub.For(p)
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, rc, err := hub.Out(ctx, c, "--nodes"); err != nil || rc != 0 {
+		t.Info("hub %s keeps this node's key as it is: it predates keys limited to projects", p.Conf["HUB"])
+		return
+	}
+	out, rc, err := hub.Out(ctx, c, "--forget", p.Name)
+	if err == nil && rc == 0 {
+		t.Done("hub %s: %s", p.Conf["HUB"], strings.TrimSpace(out))
+	} else {
+		t.Warned("hub %s did not drop %s from the key (%v): remove it from the list on the line ending in sat@%s in the hub's ~/.ssh/authorized_keys yourself", p.Conf["HUB"], p.Name, errOr(err, rc), p.NodeName())
+	}
 }
 
 func errOr(err error, rc int) error {

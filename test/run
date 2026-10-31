@@ -22,7 +22,8 @@ while [ \$# -gt 0 ]; do case \$1 in -o|-i|-p|-l) shift 2 ;; -*) shift ;; *) brea
 shift; SSH_ORIGINAL_COMMAND="\$*" exec "$ROOT/hub/sat-ssh-gate" "\${AS:-testnode}"
 SH
 chmod 755 "$T/bin/ssh"
-gate() { SSH_ORIGINAL_COMMAND="$*" "$ROOT/hub/sat-ssh-gate" "${AS-nodeA}"; }   # as node AS
+# as node AS, with KEYP as the key line's project list (none: the legacy form, every project)
+gate() { SSH_ORIGINAL_COMMAND="$*" "$ROOT/hub/sat-ssh-gate" "${AS-nodeA}" ${KEYP:+"$KEYP"}; }
 export ROOT; export -f gate
 
 git init -q --bare "$T/repo.git"; install -m 755 "$ROOT/hub/pre-receive" "$T/repo.git/hooks/pre-receive"
@@ -48,6 +49,25 @@ check "lets sat-hub through" gate "sat-hub hello status"
 check "refuses a key with no node name" bash -c '! AS="" gate "sat-hub hello status"'
 check "a key can't act as another node" bash -c '! gate "sat-hub hello claim nodeB 1"'
 
+echo "== keys limited to projects"
+git init -q --bare "$T/other.git"; mkdir -p "$T/odata"
+printf 'HOOKS=%s\nGIT_REPOS=%s\nRSYNC_DIRS=%s\n' "$ROOT/examples/hello/hub-hooks" "$T/other.git" "$T/odata" > "$SAT_CONF/projects/other"
+export KEYP=hello
+check "a listed key reaches its project" gate "sat-hub hello status"
+# (an upload-pack with nothing to send fails; that it was run, not refused, is what counts)
+reaches() { ! gate "git-upload-pack '$1'" < /dev/null 2>&1 | grep -q refused; }
+export -f reaches
+check "and its repository" reaches "$T/repo.git"
+check "a listed key is refused another project's sat-hub" bash -c '! gate "sat-hub other status"'
+check "and the refusal is logged" grep -q "refused (nodeA, key for hello): sat-hub other status" "$SAT_CONF/gate.log"
+check "and its repository" bash -c "! reaches '$T/other.git'"
+check "and its directories" bash -c "! gate 'rsync --server --sender -logDtpre.iLsfxCIvu . $T/odata'"
+check "a key listing both reaches both" env KEYP=hello,other bash -c "gate 'sat-hub other status' && reaches '$T/other.git'"
+check "a malformed list is refused" bash -c '! KEYP="hello;x" gate "sat-hub hello status" && ! KEYP="hello," gate "sat-hub hello status"'
+check "a legacy key (no list) still reaches every project" env KEYP= bash -c "gate 'sat-hub other status' && reaches '$T/other.git'"
+check "calls through the gate are recorded as seen" test -f "$SAT_CONF/seen/hello/nodeA" -a -f "$SAT_CONF/seen/other/nodeA"
+unset KEYP
+
 echo "== protocol and --forget"
 check "the hub states its protocol" test "$(gate sat-hub --protocol)" = 1
 a=$HOME/.ssh/authorized_keys; mkdir -p "$HOME/.ssh"
@@ -66,7 +86,45 @@ check "and touches no other line" test "$(cat "$a")" = "$keep"
 check "a second --forget finds nothing and says so" bash -c '! gate sat-hub --forget'
 check "and leaves the file alone" test "$(cat "$a")" = "$keep"
 check "authorized_keys stays private" test "$(stat -c %a "$a")" = 600
-rm -rf "$HOME/.ssh"
+cat > "$a" <<KEYS
+ssh-ed25519 AAAAC3own someone@laptop
+command="$HOME/.local/bin/sat-ssh-gate nodeA hello,other",no-pty ssh-ed25519 AAAAC3a sat@nodeA
+command="$HOME/.local/bin/sat-ssh-gate nodeAB hello,other",no-pty ssh-ed25519 AAAAC3ab sat@nodeAB
+command="$HOME/.local/bin/sat-ssh-gate nodeB",no-pty ssh-ed25519 AAAAC3b sat@nodeB
+KEYS
+chmod 600 "$a"; before=$(cat "$a")
+check "--forget PROJECT refuses an unsafe project" bash -c '! gate sat-hub --forget "../x"'
+check "--forget PROJECT drops just that project from the caller's line" gate sat-hub --forget other
+check "and touches nothing else" test "$(cat "$a")" = "${before/nodeA hello,other/nodeA hello}"
+check "--forget of a project not on the line changes nothing" bash -c 'gate sat-hub --forget other | grep -q "nothing to drop"'
+check "the node lists its key's projects in its own row" bash -c 'gate sat-hub hello nodes | grep -q "^hello  *nodeA .* hello$"'
+check "--forget PROJECT of the last project removes the line" bash -c 'gate sat-hub --forget hello | grep -q "removed the line"'
+check "and only that line" test "$(cat "$a")" = "$(grep -v 'gate nodeA ' <<< "$before")"
+check "--forget PROJECT leaves a legacy line (every project) as it is" bash -c 'AS=nodeB gate sat-hub --forget hello | grep -q "left as it is" && grep -q "gate nodeB\"" "$HOME/.ssh/authorized_keys"'
+check "--forget (no project) still removes a listed line" bash -c 'AS=nodeAB gate sat-hub --forget && ! grep -q nodeAB "$HOME/.ssh/authorized_keys"'
+check "authorized_keys stays private" test "$(stat -c %a "$a")" = 600
+
+echo "== the key line sat setup writes"
+# The script internal/cli/setup.go sends through the user's own login, run here as that login.
+addkey=$(sed -n '/^const addKey = `/,/`$/p' "$ROOT/internal/cli/setup.go" | sed '1s/^const addKey = `//; $s/`$//')
+mkdir -p "$HOME/.local/bin"; ln -sfn "$ROOT/hub/sat-ssh-gate" "$HOME/.local/bin/sat-ssh-gate"
+g=$HOME/.local/bin/sat-ssh-gate
+addk() { echo "$3" | bash -c "n=$1; p=$2; $addkey"; }
+export addkey; export -f addk
+printf 'ssh-ed25519 AAAAC3own someone@laptop\n' > "$a"
+addk nodeA hello 'ssh-ed25519 AAAAC3new sat@nodeA' 2>/dev/null
+check "a new key is listed for its project, as one line" test "$(grep -c AAAAC3new "$a")" = 1 -a "$(grep AAAAC3new "$a")" = "command=\"$g nodeA hello\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 AAAAC3new sat@nodeA"
+addk nodeA other 'ssh-ed25519 AAAAC3new sat@nodeA' 2>/dev/null
+check "setup for another project adds it to the line" test "$(grep AAAAC3new "$a" | cut -d'"' -f2)" = "$g nodeA hello,other"
+addk nodeA other 'ssh-ed25519 AAAAC3new sat@nodeA' 2>/dev/null
+check "and again changes nothing, still one line" test "$(grep -c AAAAC3new "$a"):$(grep AAAAC3new "$a" | cut -d'"' -f2)" = "1:$g nodeA hello,other"
+echo "command=\"/x/sat-ssh-gate nodeL\",no-pty ssh-ed25519 AAAAC3leg sat@nodeL" >> "$a"
+addk nodeL hello 'ssh-ed25519 AAAAC3leg sat@nodeL' 2>/dev/null
+check "a legacy line stays legacy (every project)" test "$(grep -c AAAAC3leg "$a"):$(grep AAAAC3leg "$a" | cut -d'"' -f2)" = "1:$g nodeL"
+check "an empty key is refused" bash -c '! addk x hello ""' _
+check "and the file kept" test "$(grep -c AAAAC3 "$a")" = 3
+check "your own key line is kept" grep -qx 'ssh-ed25519 AAAAC3own someone@laptop' "$a"
+rm -rf "$HOME/.ssh" "$HOME/.local"
 
 echo "== push guard"
 git init -q "$T/work"; git -C "$T/work" -c user.name=t -c user.email=t@t commit -q --allow-empty -m x
@@ -86,6 +144,32 @@ touch -d '-11 minutes' "$SAT_CONF/leases/hello/lease1"; "$ROOT/hub/sat-hub" --re
 check "a silent lease is reaped back to the queue" test -f "$q/lease1"
 check "and the old owner learns it is gone" bash -c '[ "$(gate sat-hub hello renew nodeA lease1; echo $?)" = 3 ]'
 rm -f "$q/lease1"
+
+echo "== limits and the nodes listing"
+cp "$SAT_CONF/projects/hello" "$T/hello.conf"
+printf 'MAX_PER_NODE=1\nMAX_TOTAL=2\n' >> "$SAT_CONF/projects/hello"
+for j in l1 l2 l3 l4; do echo 5 > "$q/$j"; touch -d "-$((10 - ${j#l})) min" "$q/$j"; done
+check "a node under its limit claims" test "$(gate sat-hub hello claim nodeA 1)" = l1
+out=$(gate sat-hub hello claim nodeA 2); rc=$?
+check "at MAX_PER_NODE claim returns nothing, not an error" test "$rc:$out" = "0:"
+check "another node still claims" test "$(AS=nodeB gate sat-hub hello claim nodeB 1)" = l2
+out=$(AS=nodeC gate sat-hub hello claim nodeC 1); rc=$?
+check "at MAX_TOTAL nobody claims" test "$rc:$out" = "0:" -a -f "$q/l3"
+mkdir -p "$HOME/.ssh"; echo "command=\"/x/sat-ssh-gate nodeA hello\",no-pty ssh-ed25519 AAAAC3a sat@nodeA" > "$HOME/.ssh/authorized_keys"
+out=$("$ROOT/hub/sat-hub" hello nodes)
+check "nodes: a header" grep -q '^PROJECT  *NODE  *LAST-SEEN  *JOBS  *KEY$' <<< "$out"
+check "nodes: each node, its jobs and its key's projects" bash -c 'grep -q "^hello  *nodeA  *[0-9]*s  *1  *hello$" <<< "$1" && grep -q "^hello  *nodeB  *[0-9]*s  *1  *none$" <<< "$1"' _ "$out"
+check "nodes: a node that only failed to claim is seen too" grep -q '^hello  *nodeC  *[0-9]*s  *0  *none$' <<< "$out"
+check "nodes: columns line up" test "$(awk '{print index($0, $3)}' <<< "$out" | sort -u | wc -l)" = 1
+check "--nodes lists every project" bash -c '"$ROOT/hub/sat-hub" --nodes | grep -q "^other  *nodeA"'
+check "through the gate, a node sees only its own rows" test "$(gate sat-hub --nodes | awk 'NR > 1 {print $2}' | sort -u)" = nodeA
+rm -rf "$HOME/.ssh"
+gate sat-hub hello release nodeA l1; AS=nodeB gate sat-hub hello release nodeB l2
+check "a released job frees the slot" test "$(gate sat-hub hello claim nodeA 1)" = l1
+gate sat-hub hello release nodeA l1
+printf 'MAX_PER_NODE=x\n' >> "$SAT_CONF/projects/hello"
+check "a limit that isn't a number is an error, not unlimited" bash -c '! gate sat-hub hello claim nodeA 1'
+cp "$T/hello.conf" "$SAT_CONF/projects/hello"; rm -f "$q"/l?
 
 echo "== node agent (hello example)"
 B=$HOME/sat/hello
