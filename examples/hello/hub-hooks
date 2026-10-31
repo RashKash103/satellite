@@ -24,7 +24,7 @@ requeue) # ID WHY: back in the queue, first in line
   mv "$D/running/$id" "$D/queue/$id" && touch -d '2000-01-01' "$D/queue/$id" ;;
 get)     # FILE: a running job's input; .counts: how many jobs are in each state (for the views)
   if [ "$1" = .counts ]; then   # no job is named .counts: claim never takes a dot file
-    for s in queue running done failed; do echo "$s $(ls "$D/$s" | wc -l)"; done; exit 0
+    for s in queue running "done" failed; do echo "$s $(ls "$D/$s" | wc -l)"; done; exit 0
   fi
   name_ok "$1" && [ -f "$D/running/$1" ] || exit 2; cat "$D/running/$1" ;;
 put) exit 2 ;;   # this project keeps no state from nodes
