@@ -1,0 +1,10 @@
+[Unit]
+Description=Satellite reaper: hands jobs whose node went silent back to their project
+
+[Service]
+ExecStart=%h/.local/bin/sat-reaper
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

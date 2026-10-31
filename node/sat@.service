@@ -1,0 +1,17 @@
+[Unit]
+Description=Satellite node for %i: runs the hub's jobs while this machine is on
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=%h/sat/bin/sat-agent %i
+# Hand items in progress back to the hub before systemd stops the processes.
+ExecStop=%h/.local/bin/sat %i _release
+KillMode=control-group
+TimeoutStopSec=90
+Restart=on-failure
+RestartSec=60
+Nice=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# sat [PROJECT] COMMAND: control this node (PROJECT may be left out when only one is set up).
+#   start            take jobs from the hub now
+#   stop             stop now; items in progress go straight back to the hub
+#   drain            take no new items; stop once the running ones finish
+#   status           service state, items in progress, hub reachability
+#   logs             follow the service log
+#   autostart on|off start at boot (off by default)
+#   check            what this node is missing for the project, and commands that would install it
+#   install          show those install steps (apt ones simulated, never removing), ask, run them
+#   selftest         the project's own check of this node (its sat/selftest)
+#   update           refresh this node's scripts and bundle; rerun the project's sat/setup
+projects() { ls -d "$HOME"/sat/*/ 2>/dev/null | xargs -rn1 basename | grep -vx bin; }
+if [ -d "$HOME/sat/$1" ] && [ "$1" != bin ]; then P=$1; shift
+elif [ "$(projects | wc -l)" -eq 1 ]; then P=$(projects)
+else echo "which project? $(projects | tr '\n' ' ')" >&2; exit 2; fi
+export SAT_PROJECT=$P SAT_BASE=$HOME/sat/$P SAT_BUNDLE=$HOME/sat/$P/bundle
+export PATH="$HOME/sat/bin:$PATH"
+. "$HOME/sat/bin/sat-lib"
+. "$SAT_BASE/config"; NAME=${SAT_NAME:-$(hostname -s)}; ST=$SAT_BASE/state; U=sat@$P.service
+case "$1" in
+start) sat_check "$SAT_BUNDLE" "$P" >/dev/null || { sat_check "$SAT_BUNDLE" "$P"; exit 1; }
+  rm -f "$ST/drain"; systemctl --user start "$U" && echo "started $P" ;;
+check) sat_check "$SAT_BUNDLE" "$P" ;;
+install) plan=$(sat_plan "$SAT_BUNDLE"); [ -z "$plan" ] && { echo "nothing missing"; exit 0; }; sat_install "$plan" ;;
+stop) systemctl --user stop "$U" && echo "stopped $P; items in progress were handed back" ;;
+drain)
+  systemctl --user is-active -q "$U" || { echo "not running"; exit 0; }
+  touch "$ST/drain"; echo "draining: no new items; stops after: $(cat "$ST"/slot*.claim 2>/dev/null | tr '\n' ' ')" ;;
+_release)   # ExecStop: hand back whatever is in progress before systemd stops the processes
+  for f in "$ST"/slot*.claim; do [ -s "$f" ] && sat-call release "$NAME" "$(cat "$f")"; rm -f "$f"; done; exit 0 ;;
+status)
+  echo "$P: $(systemctl --user is-active "$U") (autostart: $(systemctl --user is-enabled "$U" 2>/dev/null))$([ -e "$ST/drain" ] && echo ', draining')"
+  echo "hub $HUB: $(sat-call status >/dev/null 2>&1 && echo reachable || echo UNREACHABLE)"
+  for f in "$ST"/slot*.claim; do [ -s "$f" ] && echo "lane $(basename "$f" .claim | tr -dc 0-9): $(cat "$f")"; done
+  journalctl --user -u "$U" -n 8 --no-pager -o cat 2>/dev/null ;;
+logs) journalctl --user -u "$U" -f -o cat ;;
+autostart) case "$2" in on) systemctl --user enable "$U" ;; off) systemctl --user disable "$U" ;; *) echo "autostart on|off" >&2; exit 2 ;; esac ;;
+selftest) [ -x "$SAT_BUNDLE/sat/selftest" ] || { echo "$P has no selftest"; exit 0; }; exec "$SAT_BUNDLE/sat/selftest" ;;
+update)
+  t=$(mktemp -d)
+  ssh -o BatchMode=yes "$HUB" sat-hub --node-bundle | tar -C "$t" -xzf - || exit 1
+  install -m 755 "$t/sat-agent" "$t/sat-call" "$HOME/sat/bin/"; install -m 644 "$t/sat-lib" "$HOME/sat/bin/"
+  install -m 755 "$t/sat" "$HOME/.local/bin/sat"
+  install -m 644 "$t/sat@.service" "$HOME/.config/systemd/user/"; rm -rf "$t"; systemctl --user daemon-reload
+  rm -rf "$SAT_BUNDLE.new"; mkdir -p "$SAT_BUNDLE.new"; sat-call bundle | tar -C "$SAT_BUNDLE.new" -xzf - && rm -rf "$SAT_BUNDLE" && mv "$SAT_BUNDLE.new" "$SAT_BUNDLE"
+  sat_check "$SAT_BUNDLE" "$P" || exit 1
+  [ -x "$SAT_BUNDLE/sat/setup" ] && "$SAT_BUNDLE/sat/setup"
+  echo "updated (a running service picks the new agent up at its next start)" ;;
+*) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

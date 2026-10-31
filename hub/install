@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# hub/install: set this machine up as a hub. Safe to rerun (e.g. after moving the checkout).
+# Links sat-hub, sat-ssh-gate and sat-reaper into ~/.local/bin (node keys' forced command is
+# ~/.local/bin/sat-ssh-gate), installs the sat-reaper.service user unit without enabling it, and
+# makes ~/.config/sat/projects/. Projects and sshd are set up separately (docs/hub.md).
+set -euo pipefail
+HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "${SAT_CONF:-$HOME/.config/sat}/projects"
+for f in sat-hub sat-ssh-gate sat-reaper; do ln -sfn "$HERE/$f" "$HOME/.local/bin/$f"; done
+install -m 644 "$HERE/sat-reaper.service" "$HOME/.config/systemd/user/"
+systemctl --user daemon-reload 2>/dev/null || true
+cat <<MSG
+Linked sat-hub, sat-ssh-gate and sat-reaper into ~/.local/bin.
+Next (docs/hub.md):
+  - a project file per project in ${SAT_CONF:-$HOME/.config/sat}/projects/
+  - run the reaper: systemctl --user enable --now sat-reaper  (or start sat-reaper with your own daemons)
+  - sshd with key-only logins, so nodes can reach this machine
+MSG

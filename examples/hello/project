@@ -1,0 +1,6 @@
+# ~/.config/sat/projects/hello on the hub (edit the path to your checkout).
+HOOKS=$HOME/satellite/examples/hello/hub-hooks
+LEASE=600
+GIT_REPOS=
+PUSH_PREFIX=
+RSYNC_DIRS=

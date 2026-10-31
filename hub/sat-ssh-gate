@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# sat-ssh-gate: forced command for node keys in ~/.ssh/authorized_keys:
+#   command="<this file>",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 ...
+# Lets through only what the project files under ~/.config/sat/projects/ allow:
+#   fetching GIT_REPOS, pushing to them under PUSH_PREFIX (checked by hub/pre-receive), copying
+#   RSYNC_DIRS out, and sat-hub. Everything else is refused and logged.
+CONF=${SAT_CONF:-$HOME/.config/sat}
+HERE=$(dirname "$(readlink -f "$0")")
+c=$SSH_ORIGINAL_COMMAND
+log() { mkdir -p "$CONF"; echo "$(date '+%m-%d %H:%M:%S') $*" >> "$CONF/gate.log"; }
+repos=() prefix=() dirs=()
+for f in "$CONF"/projects/*; do
+  [ -f "$f" ] || continue
+  GIT_REPOS= PUSH_PREFIX= RSYNC_DIRS=; . "$f"
+  for r in $GIT_REPOS; do repos+=("${r%/}"); prefix+=("$PUSH_PREFIX"); done
+  for d in $RSYNC_DIRS; do dirs+=("${d%/}"); done
+done
+for i in "${!repos[@]}"; do
+  r=${repos[$i]}
+  case "$c" in
+    "git-upload-pack '$r'"|"git-upload-pack '$r/'") exec git-upload-pack "$r" ;;
+    "git-receive-pack '$r'"|"git-receive-pack '$r/'")
+      [ -n "${prefix[$i]}" ] || break
+      export SAT_PUSH_PREFIX=${prefix[$i]}; exec git-receive-pack "$r" ;;
+  esac
+done
+# Arguments go to sat-hub as words, never through a shell; it and the hooks check every name.
+if [[ "$c" =~ ^sat-hub\ [[:print:]]*$ ]]; then
+  read -ra a <<< "$c"; exec "$HERE/sat-hub" "${a[@]:1}"
+fi
+if [[ "$c" =~ ^rsync\ --server\ --sender\ [-A-Za-z0-9.=,\ ]*\ \.\ (/[A-Za-z0-9._/-]+)$ ]]; then
+  want=${BASH_REMATCH[1]%/}
+  for d in "${dirs[@]}"; do [ "$want" = "$d" ] && { read -ra a <<< "$c"; exec "${a[@]}"; }; done
+fi
+log "refused: $c"; echo "refused" >&2; exit 1

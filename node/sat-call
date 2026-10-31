@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# sat-call [PROJECT] COMMAND ...: call sat-hub on the hub for a project (default $SAT_PROJECT).
+proj=${SAT_PROJECT:-}; [ -z "$proj" ] && { proj=$1; shift; }
+. "$HOME/sat/$proj/config"
+exec ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 "$HUB" sat-hub "$proj" "$@"

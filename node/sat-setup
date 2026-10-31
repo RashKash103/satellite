@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# sat-setup [--install] HUB_IP PROJECT [HUB_USER]: make this machine a node for PROJECT. Safe to rerun.
+# Before: the hub runs sshd, has run hub/install and has PROJECT in ~/.config/sat/projects/, and this
+# machine can already log in to the hub with an SSH key (docs/node.md). Copy this file here and run it.
+# Makes a separate key for the node and adds it to the hub's authorized_keys behind sat-ssh-gate
+# (over your own key login: never a password), puts the node scripts, the `sat` command and the
+# sat@.service unit in your home directory, fetches the project's bundle, checks what the node is
+# missing and runs the project's sat/setup (which prepares files under ~/sat/PROJECT).
+# It installs no software: it lists what is missing and the commands that would install it. With
+# --install it shows those commands (apt ones simulated, never removing anything), asks, and runs
+# them. Nothing starts until `sat start`.
+set -euo pipefail
+INSTALL=; [ "${1:-}" = --install ] && { INSTALL=1; shift; }
+HUB_IP=${1:?usage: sat-setup [--install] HUB_IP PROJECT [HUB_USER]}; PROJ=${2:?project}; HUB_USER=${3:-$USER}
+KEY=$HOME/.ssh/sat_ed25519 ALIAS=sat-hub-$HUB_IP
+B=$HOME/sat/$PROJ
+say() { printf '\n== %s\n' "$*"; }
+
+say "key for the hub"
+command -v ssh >/dev/null || { echo "install an OpenSSH client first"; exit 1; }
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+[ -f "$KEY" ] || ssh-keygen -q -t ed25519 -N '' -C "sat@$(hostname -s)" -f "$KEY"
+if ! grep -q "^Host $ALIAS\$" ~/.ssh/config 2>/dev/null; then
+  printf 'Host %s\n  HostName %s\n  User %s\n  IdentityFile %s\n  IdentitiesOnly yes\n' "$ALIAS" "$HUB_IP" "$HUB_USER" "$KEY" >> ~/.ssh/config
+  chmod 600 ~/.ssh/config
+fi
+if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "$ALIAS" sat-hub "$PROJ" status >/dev/null 2>&1; then
+  # Through your own key login to the hub (key only: password logins are never tried). The hub
+  # builds the line itself, so its forced command is its own path to sat-ssh-gate.
+  echo "Adding the node key to the hub's authorized_keys, through your key login as $HUB_USER@$HUB_IP."
+  ssh -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ConnectTimeout=10 "$HUB_USER@$HUB_IP" \
+    'g=$HOME/.local/bin/sat-ssh-gate; [ -x "$g" ] || { echo "the hub has no $g: run hub/install in its satellite checkout" >&2; exit 3; }
+     read -r k; mkdir -p ~/.ssh && chmod 700 ~/.ssh
+     echo "command=\"$g\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty $k" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys' \
+    < "$KEY.pub" || {
+      echo "Could not log in to $HUB_USER@$HUB_IP with a key. Either set up key login first (docs/node.md), or"
+      echo "add this line to ~/.ssh/authorized_keys on the hub yourself, then rerun:"
+      echo "command=\"/home/$HUB_USER/.local/bin/sat-ssh-gate\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty $(cat "$KEY.pub")"
+      exit 1; }
+  ssh -o BatchMode=yes "$ALIAS" sat-hub "$PROJ" status >/dev/null || { echo "the hub refuses (is $PROJ set up there?)"; exit 1; }
+fi
+echo "hub reachable"
+
+say "node scripts, command and service (in your home directory)"
+mkdir -p "$HOME/sat/bin" "$HOME/.local/bin" "$HOME/.config/systemd/user" "$B/state" "$B/bundle"
+t=$(mktemp -d); ssh -o BatchMode=yes "$ALIAS" sat-hub --node-bundle | tar -C "$t" -xzf -
+install -m 755 "$t/sat-agent" "$t/sat-call" "$HOME/sat/bin/"; install -m 644 "$t/sat-lib" "$HOME/sat/bin/"
+install -m 755 "$t/sat" "$HOME/.local/bin/sat"; install -m 644 "$t/sat@.service" "$HOME/.config/systemd/user/"; rm -rf "$t"
+ssh -o BatchMode=yes "$ALIAS" sat-hub "$PROJ" bundle | tar -C "$B/bundle" -xzf -
+if [ ! -f "$B/config" ]; then
+  { echo "# $PROJ on this node (read at each start and by each job)."
+    echo "HUB=$ALIAS"; echo "HUB_IP=$HUB_IP"; echo "HUB_USER=$HUB_USER"; echo "SAT_NAME=$(hostname -s)"
+    [ -f "$B/bundle/sat/defaults" ] && cat "$B/bundle/sat/defaults" || echo "SLOTS=1"; } > "$B/config"
+fi
+command -v systemctl >/dev/null && systemctl --user daemon-reload 2>/dev/null || true
+export SAT_PROJECT=$PROJ SAT_BASE=$B SAT_BUNDLE=$B/bundle PATH="$HOME/sat/bin:$PATH"
+. "$HOME/sat/bin/sat-lib"
+
+say "what $PROJ needs on this node"
+plan=$(sat_plan "$SAT_BUNDLE")
+if [ -n "$plan" ]; then
+  if [ -n "$INSTALL" ]; then sat_install "$plan" || { echo "Rerun this when it is done."; exit 1; }
+  else sat_check "$SAT_BUNDLE" "$PROJ" || true; echo; echo "Rerun sat-setup once they are installed."; exit 1; fi
+  plan=$(sat_plan "$SAT_BUNDLE")
+  [ -z "$plan" ] || { echo "Still missing:"; sat_show "$plan"; exit 1; }
+fi
+echo "nothing missing"
+
+if [ -x "$SAT_BUNDLE/sat/setup" ]; then
+  say "$PROJ's own setup"
+  "$SAT_BUNDLE/sat/setup"
+fi
+
+say "done"
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "(add ~/.local/bin to PATH for the sat command)";; esac
+loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q yes \
+  || echo "(optional: 'loginctl enable-linger' keeps the service running while you are logged out)"
+cat <<EOF
+  sat $PROJ selftest      # the project's check of this node
+  sat $PROJ start         # take jobs;  sat stop | drain | status | logs
+  sat $PROJ autostart on  # optional: start at boot
+Settings: $B/config
+EOF

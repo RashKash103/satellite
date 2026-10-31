@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# sat-reaper: daemon. Every minute, hand items whose node went silent back to their project.
+HERE=$(dirname "$(readlink -f "$0")")
+while true; do "$HERE/sat-hub" --reap; sleep 60; done

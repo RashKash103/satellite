@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# test/run: hub and node end to end on one machine, no second machine and no sshd. An ssh shim
+# hands each command to the real sat-ssh-gate, as sshd does for a node key; HOME and SAT_CONF point
+# into a scratch directory. Covers the gate's refusals, the push guard, leases and reaping, and a
+# node agent running the hello example (pass, fail, crash then retry, drain), and requirement checks
+# (they only report; nothing is installed without a confirmation). Needs bash, git, flock.
+set -uo pipefail
+ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+T=$(mktemp -d); trap 'pkill -P $$ 2>/dev/null; rm -rf "$T"' EXIT
+export HOME=$T/home SAT_CONF=$T/conf HELLO_DIR=$T/hello PATH="$T/bin:$PATH"
+mkdir -p "$HOME" "$SAT_CONF/projects" "$T/bin"
+fails=0
+ok() { echo "ok   $*"; }
+no() { echo "FAIL $*"; fails=$((fails+1)); }
+check() { local what=$1; shift; if "$@" >/dev/null 2>&1; then ok "$what"; else no "$what"; fi; }
+wait_for() { local i; for ((i=0; i<$1*2; i++)); do eval "$2" && return 0; sleep 0.5; done; return 1; }
+
+# ssh HOST COMMAND... -> SSH_ORIGINAL_COMMAND=COMMAND sat-ssh-gate (options and host are dropped)
+cat > "$T/bin/ssh" <<SH
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do case \$1 in -o|-i|-p|-l) shift 2 ;; -*) shift ;; *) break ;; esac; done
+shift; SSH_ORIGINAL_COMMAND="\$*" exec "$ROOT/hub/sat-ssh-gate"
+SH
+chmod 755 "$T/bin/ssh"
+gate() { SSH_ORIGINAL_COMMAND="$*" "$ROOT/hub/sat-ssh-gate"; }
+export ROOT; export -f gate
+
+git init -q --bare "$T/repo.git"; install -m 755 "$ROOT/hub/pre-receive" "$T/repo.git/hooks/pre-receive"
+mkdir -p "$T/data"; echo hi > "$T/data/f"
+cat > "$SAT_CONF/projects/hello" <<CONF
+HOOKS=$ROOT/examples/hello/hub-hooks
+LEASE=600
+GIT_REPOS=$T/repo.git
+PUSH_PREFIX=refs/sat/
+RSYNC_DIRS=$T/data
+CONF
+
+echo "== gate"
+check "refuses a shell command" bash -c '! gate "ls /"'
+check "refuses another repository" bash -c "! gate \"git-upload-pack '/etc'\""
+check "refuses rsync of another directory" bash -c '! gate "rsync --server --sender -logDtpre.iLsfxCIvu . /etc"'
+check "refuses an unknown project" bash -c '! gate "sat-hub nope status"'
+check "refuses a path outside the project's files" bash -c '! gate "sat-hub hello get ../../etc/passwd"'
+gate "sat-hub hello status; touch $T/pwned" >/dev/null 2>&1
+check "runs no shell on sat-hub arguments" test ! -e "$T/pwned"
+check "logs refusals" grep -q refused "$SAT_CONF/gate.log"
+check "lets sat-hub through" gate "sat-hub hello status"
+
+echo "== push guard"
+git init -q "$T/work"; git -C "$T/work" -c user.name=t -c user.email=t@t commit -q --allow-empty -m x
+export GIT_SSH_COMMAND="$T/bin/ssh"
+check "push under the prefix" git -C "$T/work" push -q "hub:$T/repo.git" HEAD:refs/sat/x
+check "push outside the prefix is refused" bash -c "! git -C '$T/work' push -q 'hub:$T/repo.git' HEAD:refs/heads/main"
+check "fetch" git -C "$T/work" fetch -q "hub:$T/repo.git" refs/sat/x
+
+echo "== leases"
+q=$HELLO_DIR/queue; mkdir -p "$q"
+echo 5 > "$q/lease1"
+check "claim" test "$(gate sat-hub hello claim nodeA 1)" = lease1
+check "another node cannot renew it" bash -c '! gate sat-hub hello renew nodeB lease1'
+check "the owner can renew it" gate sat-hub hello renew nodeA lease1
+check "another node cannot report it" bash -c '! gate sat-hub hello ok nodeB lease1 x'
+touch -d '-11 minutes' "$SAT_CONF/leases/hello/lease1"; "$ROOT/hub/sat-hub" --reap
+check "a silent lease is reaped back to the queue" test -f "$q/lease1"
+check "and the old owner learns it is gone" bash -c '[ "$(gate sat-hub hello renew nodeA lease1; echo $?)" = 3 ]'
+rm -f "$q/lease1"
+
+echo "== node agent (hello example)"
+B=$HOME/sat/hello
+mkdir -p "$HOME/sat/bin" "$B/state" "$B/bundle"
+install -m 755 "$ROOT/node/sat-agent" "$ROOT/node/sat-call" "$HOME/sat/bin/"; install -m 644 "$ROOT/node/sat-lib" "$HOME/sat/bin/"
+printf 'HUB=hub\nSAT_NAME=testnode\nSLOTS=2\n' > "$B/config"
+echo 1000 > "$q/good"; echo oops > "$q/bad"; echo crash > "$q/crashy"
+"$HOME/sat/bin/sat-agent" hello > "$T/agent.log" 2>&1 & agent=$!
+d=$HELLO_DIR
+if wait_for 60 '[ -f $d/done/good ] && [ -f $d/done/crashy ] && [ -f $d/failed/bad ]'; then ok "all three jobs finished"; else no "jobs did not finish"; fi
+check "a passing job's result reached the hub" grep -q 'sha256 .* (by testnode)' "$d/done/good"
+check "a failing job's reason and summary reached the hub" bash -c "grep -q 'not a number' '$d/failed/bad' && grep -q 'the job held: oops' '$d/failed/bad'"
+check "a crashed job was handed back and passed on retry" grep -q 'handing it back' "$T/agent.log"
+check "no leases left" bash -c "[ -z \"\$(ls '$SAT_CONF/leases/hello')\" ]"
+touch "$B/state/drain"
+if wait_for 30 "! kill -0 $agent 2>/dev/null"; then ok "drain stops the agent"; else no "drain did not stop the agent"; fi
+
+echo "== requirements (nothing is installed unless asked)"
+. "$ROOT/node/sat-lib"
+mkdir -p "$T/needy/sat"; printf '#!/bin/sh\necho "apt sat-test-pkg"\necho "run touch %s/ran"\n' "$T" > "$T/needy/sat/requirements"
+chmod 755 "$T/needy/sat/requirements"
+out=$(sat_check "$T/needy" needy); rc=$?
+check "check reports what is missing" test $rc -eq 1
+check "and shows apt with --no-remove" grep -q 'sudo apt-get install --no-remove sat-test-pkg' <<< "$out"
+check "and the other commands" grep -qF "touch $T/ran" <<< "$out"
+sat_install "$(sat_plan "$T/needy")" < /dev/null > "$T/install.out" 2>&1
+check "install without a terminal to confirm runs nothing" test ! -e "$T/ran"
+check "the hello example needs nothing here" sat_check "$ROOT/examples/hello/bundle" hello
+echo
+[ $fails -eq 0 ] && echo "all passed" || { echo "$fails failed; agent log:"; cat "$T/agent.log"; exit 1; }

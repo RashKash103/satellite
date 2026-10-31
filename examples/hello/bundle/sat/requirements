@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# sat/requirements: what a hello job needs that this node lacks, as plan lines (docs/projects.md).
+# Prints nothing when the node has it all. It only looks: Satellite installs nothing unless asked.
+command -v seq >/dev/null && command -v sha256sum >/dev/null || echo "apt coreutils"

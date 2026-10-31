@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# sat-hub PROJECT COMMAND ...: the hub's lease engine. Nodes call it over ssh (through sat-ssh-gate).
+# The project's own queue and bookkeeping live in its hooks script (HOOKS in the project file); this
+# script only hands items out under leases and takes them back. A lease not renewed for LEASE s is
+# reaped: the item goes back to the project (`requeue`), so a node vanishing never stalls anything.
+#   claim HOST SLOT        -> the hook's claim line ("ID ..."), or nothing
+#   renew HOST ID          -> exit 3 when the lease is gone or another node's: stop working on it
+#   ok HOST ID ARGS...     -> hook `ok`, with SAT_CLAIM set to the claim line
+#   fail HOST ID REASON... -> hook `fail`; stdin is the failure summary
+#   release HOST ID        -> hook `requeue`
+#   get FILE | put FILE    -> hook (it decides which files are allowed)
+#   bundle                 -> hook: tar.gz of what the node runs for this project
+#   status                 -> leases
+# `sat-hub --reap` reaps every project (sat-reaper runs it each minute); `sat-hub --node-bundle`
+# prints the node's own scripts (this repository's node/).
+CONF=${SAT_CONF:-$HOME/.config/sat}
+ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+name_ok() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; }
+
+reap() {   # PROJECT
+  local proj=$1 L=$CONF/leases/$1 now x id h HOOKS LEASE=600
+  . "$CONF/projects/$proj"; now=$(date +%s); export SAT_PROJECT=$proj
+  for x in "$L"/*; do
+    [ -f "$x" ] || continue; id=$(basename "$x")
+    [ $((now - $(stat -c %Y "$x"))) -gt "$LEASE" ] || continue
+    h=$(awk '{print $1}' "$x"); rm -f "$x"
+    "$HOOKS" requeue "$id" "lease expired ($h silent for $LEASE s)"
+  done
+}
+case "$1" in
+  --reap) for f in "$CONF"/projects/*; do [ -f "$f" ] && reap "$(basename "$f")"; done; exit 0 ;;
+  --node-bundle) tar -C "$ROOT/node" -czf - . ; exit 0 ;;
+esac
+
+proj=$1 cmd=$2; shift 2
+name_ok "$proj" && [ -f "$CONF/projects/$proj" ] || { echo "no project $proj" >&2; exit 2; }
+HOOKS= LEASE=600
+. "$CONF/projects/$proj"; export SAT_PROJECT=$proj
+L=$CONF/leases/$proj; mkdir -p "$L"
+owner() { [ "$(awk '{print $1}' "$L/$2" 2>/dev/null)" = "$1" ]; }   # HOST ID
+claim_line() { cut -d' ' -f4- "$L/$1"; }
+
+case "$cmd" in
+claim)
+  host=$1 slot=$2; name_ok "$host" && name_ok "$slot" || exit 2
+  exec 9>"$L/.lock"; flock 9
+  line=$("$HOOKS" claim "$host" "$slot") || exit 1
+  [ -z "$line" ] && exit 0
+  id=${line%% *}; name_ok "$id" || { echo "hook gave a bad id: $id" >&2; exit 1; }
+  echo "$host $slot $(date +%s) $line" > "$L/$id"; echo "$line" ;;
+renew)
+  name_ok "$2" || exit 2; owner "$1" "$2" || exit 3; touch "$L/$2" ;;
+ok)
+  host=$1 id=$2; shift 2; name_ok "$id" || exit 2; owner "$host" "$id" || exit 3
+  SAT_CLAIM=$(claim_line "$id") "$HOOKS" ok "$host" "$id" "$@"; rc=$?
+  rm -f "$L/$id"; exit $rc ;;
+fail)
+  host=$1 id=$2; shift 2; name_ok "$id" || exit 2; owner "$host" "$id" || exit 3
+  SAT_CLAIM=$(claim_line "$id") "$HOOKS" fail "$host" "$id" "$*"; rc=$?
+  rm -f "$L/$id"; exit $rc ;;
+release)
+  host=$1 id=$2; name_ok "$id" || exit 2; owner "$host" "$id" || exit 0
+  rm -f "$L/$id"; "$HOOKS" requeue "$id" "handed back by $host" ;;
+get|put) exec "$HOOKS" "$cmd" "$1" ;;
+bundle) exec "$HOOKS" bundle ;;
+status)
+  now=$(date +%s)
+  for x in "$L"/*; do [ -f "$x" ] && echo "$(basename "$x"): $(awk '{print $1" slot "$2}' "$x"), renewed $((now - $(stat -c %Y "$x"))) s ago"; done
+  exit 0 ;;
+*) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac

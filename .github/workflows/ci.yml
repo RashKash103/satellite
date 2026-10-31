@@ -1,0 +1,13 @@
+name: ci
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -S warning hub/install hub/sat-hub hub/sat-ssh-gate hub/sat-reaper hub/pre-receive node/sat node/sat-agent node/sat-call node/sat-setup node/sat-lib examples/hello/hub-hooks examples/hello/bundle/sat/job examples/hello/bundle/sat/selftest examples/hello/bundle/sat/requirements test/run
+      - name: end-to-end
+        run: test/run

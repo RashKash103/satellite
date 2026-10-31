@@ -1,0 +1,87 @@
+# sat-lib: sourced by sat-setup and sat. What a node is missing, and installing it only when asked.
+#
+# Requirements are plan lines, printed by sat_needs (the engine's own) and by the project's
+# sat/requirements (empty output: nothing missing):
+#   apt PKG...      Debian/Ubuntu packages
+#   run COMMAND     any other install step, run as you (say sudo in it if it needs root)
+#   note TEXT       something to do by hand
+# Nothing is installed unless the user asks (sat-setup --install, sat PROJECT install), and then
+# only after every command has been shown and confirmed. apt steps are simulated first, so the
+# exact packages are listed, and always run with --no-remove: apt stops rather than remove anything.
+
+# sat_needs: what Satellite itself needs on a node.
+sat_needs() {
+  local t pk miss=()
+  for t in ssh:openssh-client tar:tar gzip:gzip setsid:util-linux diff:diffutils; do
+    command -v "${t%%:*}" >/dev/null || miss+=("${t#*:}")
+  done
+  [ ${#miss[@]} -gt 0 ] && echo "apt ${miss[*]}"
+  command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1 \
+    || echo "note systemd user services are not available (the node runs as sat@PROJECT.service)"
+  return 0
+}
+
+# sat_plan BUNDLE: the whole plan for a project's node, one step per line.
+sat_plan() {
+  sat_needs
+  [ -x "$1/sat/requirements" ] && "$1/sat/requirements"
+  return 0
+}
+
+# sat_apt_line PKG...: the command an apt step runs.
+sat_apt_line() { echo "sudo apt-get install --no-remove $*"; }
+
+# sat_show PLAN: print the plan as commands to run by hand.
+sat_show() {
+  local kind rest
+  while read -r kind rest; do
+    case $kind in
+      apt) echo "  $(sat_apt_line "$rest")" ;;
+      run) echo "  $rest" ;;
+      note) echo "  # by hand: $rest" ;;
+    esac
+  done <<< "$1"
+}
+
+# sat_install PLAN: show every step (apt ones simulated), ask once, run them in order.
+sat_install() {
+  local plan=$1 kind rest sim n=0 notes=0
+  echo "These steps will run, in this order:"
+  while read -r kind rest; do
+    case $kind in
+      apt)
+        n=$((n+1)); echo; echo "$n. $(sat_apt_line "$rest")"
+        command -v apt-get >/dev/null || { echo "   no apt-get on this machine: install these packages yourself"; return 1; }
+        # shellcheck disable=SC2086  # package names are words
+        if ! sim=$(apt-get -s install --no-remove $rest 2>&1); then
+          echo "$sim" | sed 's/^/   apt: /'; echo "   apt can't do this without removing packages, so nothing was run."; return 1
+        fi
+        echo "   installs: $(echo "$sim" | awk '/^Inst / && $3 !~ /^\[/ {s=s $2 " "} END{print s ? s : "(none)"}')"
+        echo "   upgrades: $(echo "$sim" | awk '/^Inst / && $3 ~ /^\[/ {s=s $2 " "} END{print s ? s : "(none)"}')"
+        echo "   removes:  nothing (--no-remove: apt stops instead)" ;;
+      run) n=$((n+1)); echo; echo "$n. $rest" ;;
+      note) notes=$((notes+1)); echo; echo "-  by hand (not run): $rest" ;;
+    esac
+  done <<< "$plan"
+  [ $n -eq 0 ] && { echo "(nothing to run)"; return $(( notes > 0 )); }
+  echo
+  [ -t 0 ] || { echo "Not a terminal: nothing was run. Run this from a terminal to confirm."; return 1; }
+  read -rp "Run these $n step(s)? [y/N] " a; [[ "$a" =~ ^[Yy]$ ]] || { echo "Nothing was run."; return 1; }
+  while read -r kind rest; do
+    case $kind in
+      # shellcheck disable=SC2086  # package names are words
+      apt) echo "+ $(sat_apt_line "$rest")"; sudo apt-get install --no-remove $rest || return 1 ;;
+      run) echo "+ $rest"; bash -c "$rest" || return 1 ;;
+    esac
+  done <<< "$plan"
+  return $(( notes > 0 ))
+}
+
+# sat_check BUNDLE PROJECT: report what is missing; 0 when nothing is.
+sat_check() {
+  local plan; plan=$(sat_plan "$1")
+  [ -z "$plan" ] && { echo "$2: this node has everything it needs."; return 0; }
+  echo "$2: this node is missing what these commands would install. Install them yourself, or run"
+  echo "\`sat $2 install\` to see the exact steps and confirm them:"
+  echo; sat_show "$plan"; return 1
+}

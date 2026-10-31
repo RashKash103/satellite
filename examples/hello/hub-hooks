@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# hub-hooks for the hello example: a job is a file in a spool directory on the hub, holding a
+# number N; nodes work out sha256 of `seq N`. Shows every hook, and get used to send a job its input.
+#   $D/queue/ID  ->  claim  ->  $D/running/ID  ->  ok: $D/done/ID   fail: $D/failed/ID
+# D is $HELLO_DIR, or ~/.local/share/sat-$SAT_PROJECT. Add work with: echo 100000 > $D/queue/job1
+D=${HELLO_DIR:-$HOME/.local/share/sat-$SAT_PROJECT}
+HERE=$(dirname "$(readlink -f "$0")")
+name_ok() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; }   # every id and file name from a node is checked
+mkdir -p "$D"/{queue,running,done,failed}
+
+cmd=$1; shift
+case "$cmd" in
+claim)   # HOST SLOT: the oldest queued job (sat-hub holds a lock around claims)
+  id=$(ls -tr "$D/queue" | head -1); [ -n "$id" ] || exit 0
+  mv "$D/queue/$id" "$D/running/$id" && echo "$id" ;;
+ok)      # HOST ID WORDS...: the job's result words
+  host=$1 id=$2; shift 2; name_ok "$id" && [ -f "$D/running/$id" ] || exit 2
+  { cat "$D/running/$id"; echo "$* (by $host)"; } > "$D/done/$id" && rm "$D/running/$id" ;;
+fail)    # HOST ID REASON, summary on stdin
+  host=$1 id=$2 reason=$3; name_ok "$id" && [ -f "$D/running/$id" ] || exit 2
+  { cat "$D/running/$id"; echo "failed on $host: $reason"; cat; } > "$D/failed/$id" && rm "$D/running/$id" ;;
+requeue) # ID WHY: back in the queue, first in line
+  id=$1; name_ok "$id" && [ -f "$D/running/$id" ] || exit 0
+  mv "$D/running/$id" "$D/queue/$id" && touch -d '2000-01-01' "$D/queue/$id" ;;
+get)     # FILE: a running job's input
+  name_ok "$1" && [ -f "$D/running/$1" ] || exit 2; cat "$D/running/$1" ;;
+put) exit 2 ;;   # this project keeps no state from nodes
+bundle) tar -C "$HERE/bundle" -czf - . ;;
+*) exit 2 ;;
+esac
