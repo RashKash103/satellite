@@ -43,6 +43,8 @@ var helps = []cmdHelp{
 	{name: "uninstall", args: "[--yes] [PROJECT]", short: "remove a project, or with the last one everything", node: true,
 		long: "Lists exactly what it will remove and asks. It never removes packages."},
 	{name: "migrate", args: "[--yes]", short: "move a node set up by the bash scripts (~/sat) to ~/.sat", node: true},
+	{name: "completion", args: "zsh|bash|install", short: "shell completion (docs/node.md)", node: true,
+		long: "zsh prints the zsh completion: sat completion zsh > \"${fpath[1]}/_sat\". install writes it\nto ~/.sat/completions/_sat and prints the line to add to ~/.zshrc (it never edits it).\nbash prints the bash one. Candidates come from this node's own files, as they change."},
 	{name: "version", short: "this binary's version", node: true},
 	{name: "help", args: "[COMMAND]", short: "this help, or a command's", node: true},
 }

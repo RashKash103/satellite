@@ -109,8 +109,8 @@ output into the right pane. `i` install, `U` uninstall the project, `ctrl+u` uni
 itself, which shows exactly what it will do and asks before anything runs, as on the command line;
 `enter` then brings the live view back.
 
-`sat [PROJECT] COMMAND`. PROJECT can be left out when the node has only one (`sat status` then shows
-them all).
+`sat [PROJECT] COMMAND`, or `sat COMMAND PROJECT`. PROJECT can be left out when the node has only one
+(`sat status` then shows them all).
 
 | command | |
 |---|---|
@@ -137,9 +137,36 @@ and for the node as a whole:
 | `sat self-update [--yes]` | install the newest release ([updates](#updates)) |
 | `sat uninstall [--yes] [PROJECT]` | remove a project, or everything ([below](#removing-a-node)) |
 | `sat migrate [--yes]` | move a bash node to `~/.sat` ([below](#moving-from-the-bash-node)) |
+| `sat completion zsh\|bash\|install` | shell completion ([below](#shell-completion)) |
 | `sat version` | |
 
 `sat help COMMAND` (or `COMMAND --help`) explains one command.
+
+### Shell completion
+
+For zsh, either write the completion into a directory on your `fpath`:
+
+```sh
+sat completion zsh > "${fpath[1]}/_sat"
+```
+
+or let `sat completion install` write it to `~/.sat/completions/_sat`; it prints the one line to add
+to `~/.zshrc` (it never edits it):
+
+```sh
+fpath=(~/.sat/completions $fpath); autoload -Uz compinit && compinit
+```
+
+(if your `.zshrc` already runs `compinit`, put only the `fpath` part before it). For bash,
+`sat completion bash > ~/.local/share/bash-completion/completions/sat`.
+
+It completes the commands, with what each does; project names, before or after the command; each
+command's flags; `autostart on|off`; the project's views, with their titles, and `--lane` with its
+lane numbers (and the job each runs); the keys of the project's `env` (`KEY=` to set one, `-KEY` to
+unset it); `help` topics, `uninstall`'s projects, and `sat-call`'s project and hub commands. The
+script itself is fixed: every candidate comes from `sat __complete`, which reads only this node's
+files (no network), so completion follows projects, views and env files as they change, and
+updates of `sat` as it is replaced.
 
 ### Output and colour
 

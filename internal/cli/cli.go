@@ -38,6 +38,7 @@ sat setup [--install] HUB_IP PROJECT [HUB_USER]   make this machine a node for P
 sat self-update [--yes]      install the newest release (docs/security.md)
 sat uninstall [--yes] [PROJECT]   remove a project, or with the last one everything
 sat migrate [--yes]          move a node set up by the bash scripts (~/sat) to ~/.sat
+sat completion zsh|bash|install   shell completion (docs/node.md)
 sat version
 `
 
@@ -75,12 +76,22 @@ func Main(version string, args []string) int {
 		return runAgent(a[1])
 	case "_unit":
 		return installUnit()
+	case "__complete":
+		return completeCmd(a[1:])
+	case "completion":
+		return completionCmd(a[1:])
 	case "version", "--version":
 		return printVersion()
 	case "help", "-h", "--help":
 		return help(a[1:])
 	}
 	ps := conf.List()
+	// sat COMMAND PROJECT ... is sat PROJECT COMMAND ... (but with one project, sat view NAME names a view)
+	if len(a) > 1 && !slices.Contains(ps, a[0]) && slices.Contains(ps, a[1]) {
+		if h := helpFor(a[0]); h != nil && !h.node && (a[0] != "view" || len(ps) > 1) {
+			a = append([]string{a[1], a[0]}, a[2:]...)
+		}
+	}
 	var name string
 	switch {
 	case slices.Contains(ps, a[0]):

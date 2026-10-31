@@ -90,6 +90,7 @@ sat hello check          # what's missing, if anything, and how to install it
 sat hello selftest
 sat hello start
 sat                      # the live view
+sat completion install   # optional: zsh completion (prints the line for ~/.zshrc)
 ```
 
 (or `go install github.com/RashKash103/satellite/cmd/sat@latest` and `sat setup ...`). A node set
