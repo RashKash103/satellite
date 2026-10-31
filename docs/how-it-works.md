@@ -26,7 +26,8 @@ speak is `1`.
 
 1. **Claim.** Unless the bundle's `sat/ready` says "not now" or the node is short of disk
    ([node.md](node.md#disk-space)), a lane runs `sat-hub PROJECT claim NODE SLOT`. On the hub, `sat-hub` takes a per-project
-   lock and calls the project's `claim` hook, which picks a job, marks it taken in the project's own
+   lock and, unless the node or all nodes already hold as many jobs as the project file's
+   `MAX_PER_NODE` or `MAX_TOTAL` allows (then the answer is nothing), calls the project's `claim` hook, which picks a job, marks it taken in the project's own
    bookkeeping and prints `ID WORDS...`. `sat-hub` writes a lease file
    (`~/.config/sat/leases/PROJECT/ID`: node, slot, time, the claim line) and returns the line.
 2. **Run.** The lane runs the bundle's `sat/job ID WORDS...` in its own process group, through

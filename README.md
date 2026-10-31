@@ -125,7 +125,7 @@ cat ~/.local/share/sat-hello/done/job1                  # on the hub
 
 ```
 hub/install          set a machine up as a hub
-hub/sat-hub          lease engine: claim, renew, ok, fail, release, get/put, bundle, status, --reap
+hub/sat-hub          lease engine: claim, renew, ok, fail, release, get/put, bundle, status, nodes, --reap
 hub/sat-ssh-gate     forced command for node keys
 hub/sat-reaper       reaps silent leases every minute (hub/sat-reaper.service runs it)
 hub/pre-receive      git hook: pushes through the gate may write only the project's PUSH_PREFIX

@@ -52,8 +52,9 @@ It is safe to rerun, and **it installs no software**. It:
 1. makes `~/.ssh/sat_ed25519` and an SSH alias `sat-hub-HUB_IP` for it (both kept when they
    exist: one key per node, whatever the number of projects);
 2. adds that key to the hub's `authorized_keys` behind `sat-ssh-gate`, bound to this node's name
-   (the short hostname), using your own key login; a rerun replaces the line instead of adding one,
-   and an empty or malformed key is refused;
+   (the short hostname) and to the projects it serves, using your own key login; setting up
+   another project on the same hub adds that project to the key's line, a rerun replaces the line
+   instead of adding one, and an empty or malformed key is refused;
 3. installs itself as `~/.sat/bin/sat` (with `sat-call` beside it, for jobs), the `sat@.service`
    user unit, and a `~/.local/bin/sat` link if that name is free;
 4. fetches the project's bundle and writes `~/.sat/projects/PROJECT/config` (adding the bundle's
@@ -206,9 +207,11 @@ sat uninstall             # everything
 ```
 
 It lists exactly what it will remove and asks: it stops and disables the project's service, hands
-its running jobs back and removes `~/.sat/projects/PROJECT`. When no project is left on a hub, it
-asks that hub to forget the node's key (`sat-hub --forget`, which removes only this node's line)
-and drops the SSH alias; with the last project it also removes `~/.sat`, the unit, the
+its running jobs back and removes `~/.sat/projects/PROJECT`. While other projects stay on that hub,
+it asks the hub to drop PROJECT from the node's key (`sat-hub --forget PROJECT`; a hub too old for
+that is not asked, and its line stays as it is). When no project is left on a hub, it asks that hub
+to forget the node's key (`sat-hub --forget`, which removes only this node's line) and drops the
+SSH alias; with the last project it also removes `~/.sat`, the unit, the
 `~/.local/bin/sat` link and the node key. It never removes packages: if `sat install` installed
 any, it lists what it ran, and they are yours to keep or remove.
 

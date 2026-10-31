@@ -11,10 +11,15 @@
 #   get FILE | put FILE    -> hook (it decides which files are allowed)
 #   bundle                 -> hook: tar.gz of what the node runs for this project
 #   status                 -> leases
+#   nodes                  -> each node seen for the project: last call, jobs held, its key's projects
 # `sat-hub --reap` reaps every project (sat-reaper runs it each minute); `sat-hub --node-bundle`
 # prints the bash node's scripts (this repository's node/); `sat-hub --protocol` prints the protocol
 # this hub speaks (the Go node won't claim from a hub that doesn't speak its own); `sat-hub --forget`,
-# through the gate, removes the calling node's own key line(s) from ~/.ssh/authorized_keys.
+# through the gate, removes the calling node's own key line(s) from ~/.ssh/authorized_keys, and
+# `sat-hub --forget PROJECT` only that project from its line(s) (a line goes with its last project);
+# `sat-hub --nodes` is `nodes` for every project. Through the gate `nodes` shows the caller's own rows.
+# The project file may set MAX_PER_NODE (jobs one node may hold at once) and MAX_TOTAL (all nodes
+# together); 0 or unset: no limit. At a limit, claim returns nothing.
 CONF=${SAT_CONF:-$HOME/.config/sat}
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 name_ok() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; }
@@ -29,31 +34,90 @@ reap() {   # PROJECT
     "$HOOKS" requeue "$id" "lease expired ($h silent for $LEASE s)"
   done
 }
-# Only lines whose forced command is `…sat-ssh-gate NODE"` for the calling node (SAT_NODE, set by the
-# gate from the key itself) go; every other line is kept as it is. Rewritten beside, then renamed.
-forget() {
-  local a=$HOME/.ssh/authorized_keys n=${SAT_NODE:-} re line hit=0
+# Only lines whose forced command is `…sat-ssh-gate NODE[ PROJECTS]"` for the calling node (SAT_NODE,
+# set by the gate from the key itself) are touched; every other line is kept as it is. With PROJECT,
+# only that project leaves the line's list, and the line goes with its last project; a line with no
+# list (the legacy form, every project) is left as it is. Rewritten beside, then renamed.
+forget() {   # [PROJECT]
+  local a=$HOME/.ssh/authorized_keys n=${SAT_NODE:-} p=${1:-} re line hit=0 kept=0 legacy=0 l q x out
   [ -n "$n" ] || { echo "--forget works only through sat-ssh-gate, for the calling node's own key" >&2; return 2; }
   name_ok "$n" || { echo "refused: unsafe node name" >&2; return 2; }
-  re="^command=\"([^\"]*/)?sat-ssh-gate ${n//./\\.}\"[, ]"
+  [ -z "$p" ] || name_ok "$p" || { echo "refused: unsafe project name" >&2; return 2; }
+  re="^(command=\"([^\"]*/)?sat-ssh-gate ${n//./\\.})( ([^\"]*))?(\"[, ].*)$"
   [ -f "$a" ] || { echo "no $a" >&2; return 1; }
   ( umask 077; : > "$a.sat-forget" ) || return 1
   while IFS= read -r line || [ -n "$line" ]; do
-    if [[ $line =~ $re ]]; then hit=$((hit+1)); else printf '%s\n' "$line"; fi
+    if ! [[ $line =~ $re ]]; then printf '%s\n' "$line"; continue; fi
+    hit=$((hit+1))
+    [ -n "$p" ] || continue
+    l=${BASH_REMATCH[4]}
+    if [ -z "$l" ]; then legacy=$((legacy+1)); printf '%s\n' "$line"; continue; fi
+    out=''
+    IFS=, read -ra q <<< "$l"
+    for x in "${q[@]}"; do [ "$x" = "$p" ] || out+=${out:+,}$x; done
+    [ "$out" = "$l" ] && { printf '%s\n' "$line"; continue; }
+    [ -n "$out" ] && { kept=$((kept+1)); printf '%s\n' "${BASH_REMATCH[1]} $out${BASH_REMATCH[5]}"; }
   done < "$a" > "$a.sat-forget"
   [ $hit -gt 0 ] || { rm -f "$a.sat-forget"; echo "no key line for node $n" >&2; return 1; }
-  mv "$a.sat-forget" "$a" && echo "removed $hit key line(s) for node $n"
+  if [ -n "$p" ] && cmp -s "$a" "$a.sat-forget"; then
+    rm -f "$a.sat-forget"
+    if [ $legacy -gt 0 ]; then echo "node $n's key line serves every project (no project list): left as it is"
+    else echo "node $n's key line does not list $p: nothing to drop"; fi
+    return 0
+  fi
+  mv "$a.sat-forget" "$a" || return 1
+  if [ -z "$p" ]; then echo "removed $hit key line(s) for node $n"
+  elif [ $kept -gt 0 ]; then echo "dropped $p from node $n's key line"
+  else echo "dropped $p, the last project on node $n's key line: removed the line"; fi
 }
+# nodes [PROJECT...]: one row per node seen for each project (a lease, or a call through the gate),
+# its last call (-: none recorded), the jobs it holds and its key line's projects (all: the legacy
+# form; none: no line).
+# Through the gate (SAT_NODE set) only the caller's own rows.
+nodes() {
+  local now pr x n seen held key rows=''
+  now=$(date +%s)
+  for pr in "$@"; do
+    while read -r n; do
+      name_ok "$n" || continue
+      [ -z "${SAT_NODE:-}" ] || [ "$n" = "$SAT_NODE" ] || continue
+      seen=-; x=$CONF/seen/$pr/$n
+      [ -f "$x" ] && seen=$(ago $((now - $(stat -c %Y "$x"))))
+      held=$(cat "$CONF/leases/$pr"/* 2>/dev/null | awk -v n="$n" '$1 == n' | wc -l)
+      key=$(keyof "$n")
+      rows+="$pr $n $seen $held $key"$'\n'
+    done < <( { ls "$CONF/seen/$pr" 2>/dev/null; awk '{print $1}' "$CONF/leases/$pr"/* 2>/dev/null; } | sort -u)
+  done
+  printf 'PROJECT NODE LAST-SEEN JOBS KEY\n%s' "$rows" | awk '
+    { for (i = 1; i <= NF; i++) { c[NR, i] = $i; if (length($i) > w[i]) w[i] = length($i) } n = NR; f[NR] = NF }
+    END { for (r = 1; r <= n; r++) { s = ""; for (i = 1; i <= f[r]; i++) s = s (i < f[r] ? sprintf("%-" w[i] "s  ", c[r, i]) : c[r, i]); print s } }'
+}
+ago() { if [ "$1" -lt 120 ]; then echo "${1}s"; elif [ "$1" -lt 7200 ]; then echo "$(($1 / 60))m"; elif [ "$1" -lt 172800 ]; then echo "$(($1 / 3600))h"; else echo "$(($1 / 86400))d"; fi; }
+keyof() {   # NODE: its key line(s)' project lists, "all" for a line without one, "none" without a line
+  local re="^command=\"([^\"]*/)?sat-ssh-gate ${1//./\\.}( ([^\"]*))?\"[, ]" line out=''
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ $line =~ $re ]] && out+=${out:+;}${BASH_REMATCH[3]:-all}
+  done < "$HOME/.ssh/authorized_keys" 2>/dev/null
+  echo "${out:-none}"
+}
+gatelog() { mkdir -p "$CONF"; echo "$(date '+%m-%d %H:%M:%S') $*" >> "$CONF/gate.log"; }
 case "$1" in
   --protocol) echo 1; exit 0 ;;   # bump with any change old nodes or hubs can't follow
-  --forget) forget; exit ;;
+  --forget) forget "${2:-}"; exit ;;
+  --nodes) ps=(); for f in "$CONF"/projects/*; do [ -f "$f" ] && ps+=("$(basename "$f")"); done; nodes "${ps[@]}"; exit 0 ;;
   --reap) for f in "$CONF"/projects/*; do [ -f "$f" ] && reap "$(basename "$f")"; done; exit 0 ;;
   --node-bundle) tar -C "$ROOT/node" -czf - . ; exit 0 ;;
 esac
 
 proj=$1 cmd=$2; shift 2
 name_ok "$proj" && [ -f "$CONF/projects/$proj" ] || { echo "no project $proj" >&2; exit 2; }
-HOOKS='' LEASE=600
+# A key line that lists its projects (SAT_KEY_PROJECTS, set by the gate) reaches only those.
+if [ -n "${SAT_KEY_PROJECTS:-}" ] && [[ ",$SAT_KEY_PROJECTS," != *",$proj,"* ]]; then
+  gatelog "refused ($SAT_NODE, key for $SAT_KEY_PROJECTS): sat-hub $proj $cmd $*"
+  echo "refused: this node's key does not serve project $proj" >&2; exit 2
+fi
+if [ -n "${SAT_NODE:-}" ]; then mkdir -p "$CONF/seen/$proj" && touch "$CONF/seen/$proj/$SAT_NODE"; fi 2>/dev/null
+HOOKS='' LEASE=600 MAX_PER_NODE=0 MAX_TOTAL=''
 . "$CONF/projects/$proj"; export SAT_PROJECT=$proj
 L=$CONF/leases/$proj; mkdir -p "$L"
 # Through the gate SAT_NODE is the name bound to the caller's key, and a node may act only as itself.
@@ -67,6 +131,14 @@ case "$cmd" in
 claim)
   host=$1 slot=$2; name_ok "$host" && name_ok "$slot" || exit 2
   exec 9>"$L/.lock"; flock 9
+  for v in MAX_PER_NODE MAX_TOTAL; do
+    [[ "${!v:-0}" =~ ^[0-9]+$ ]] || { echo "the project file's $v is not a number: ${!v}" >&2; exit 1; }
+  done
+  if [ "${MAX_PER_NODE:-0}" -gt 0 ] || [ "${MAX_TOTAL:-0}" -gt 0 ]; then
+    held=$(cat "$L"/* 2>/dev/null | awk -v n="$host" '{ t++ } $1 == n { m++ } END { print m + 0, t + 0 }')
+    [ "${MAX_PER_NODE:-0}" -gt 0 ] && [ "${held% *}" -ge "$MAX_PER_NODE" ] && exit 0
+    [ "${MAX_TOTAL:-0}" -gt 0 ] && [ "${held#* }" -ge "$MAX_TOTAL" ] && exit 0
+  fi
   line=$("$HOOKS" claim "$host" "$slot") || exit 1
   [ -z "$line" ] && exit 0
   id=${line%% *}; name_ok "$id" || { echo "hook gave a bad id: $id" >&2; exit 1; }
@@ -90,5 +162,6 @@ status)
   now=$(date +%s)
   for x in "$L"/*; do [ -f "$x" ] && echo "$(basename "$x"): $(awk '{print $1" slot "$2}' "$x"), renewed $((now - $(stat -c %Y "$x"))) s ago"; done
   exit 0 ;;
-*) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+nodes) nodes "$proj"; exit 0 ;;
+*) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

@@ -31,7 +31,12 @@ before the bash node is retired.
 
 - A Go `sat-hub` and gate in the same binary, with the bash hub as the reference until it matches.
 
-## Later
+## Done: keys limited to projects, and job limits
 
-- Per-project node keys, so a key reaches only its own project's repositories and directories.
-- Hub-side limits on how many jobs one node may hold.
+- **Per-project node keys:** a key line lists the projects it serves
+  (`sat-ssh-gate NODE PROJECT[,PROJECT...]`) and reaches only their repositories, directories and
+  `sat-hub`. `sat setup` adds a project to the line, `sat uninstall PROJECT` has the hub drop it
+  (`sat-hub --forget PROJECT`). Lines without a list (the legacy form) still serve every project.
+- **Hub-side limits:** `MAX_PER_NODE` and `MAX_TOTAL` in the project file cap the jobs one node, and
+  all nodes together, hold at once.
+- **`sat-hub PROJECT nodes`** (and `--nodes`): each node's last call, jobs held and key projects.
