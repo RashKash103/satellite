@@ -85,14 +85,19 @@ view shows them all.
 
 ## 4. The `sat` command
 
-`sat` on its own is the **live view**, in panes: on the left the projects (`1`), the selected
-project's lanes (`2`: each lane's job, how long it has run and its own progress) and its details
-(`3`: service, autostart, the hub and its protocol, last contact, disk room); on the right (`4`)
-the selected lane's log, the service log or the output of the last action (`[` and `]` switch).
-`tab` and the numbers move between panes, `j`/`k` or the arrows within one, `enter` goes in, `/`
-filters the pane (projects, lanes or log lines), the mouse clicks and scrolls, and `?` lists every
-key. It follows the terminal's size and background and reads what the agents write; it opens no
-connection of its own.
+`sat` on its own is the **live view**, in panes: on the left the projects (`1`, each with a badge
+when it has [alerts](#alerts)), the selected project's lanes (`2`: each lane's job, how long it has
+run and its own progress line) and its details (`3`: service, autostart, the hub and its protocol,
+last contact, disk room; with room to spare, this machine's CPU, memory and load as sparklines and
+each project's free disk against its floor); on the right (`4`) tabs: the selected lane's log, the
+service log, the output of the last action, every project's alerts, and the project's own
+[views](projects.md#views) (marked ◆; a lane's views while it has a job). `[` and `]` go through
+the tabs, `w` to the next view, `!` to the alerts; the tab chosen is remembered for each project.
+`tab` and the numbers move between panes, `j`/`k`, the arrows, `pgup`/`pgdown`, `g`/`G` and the
+mouse wheel scroll within one (the border says how much more there is), `enter` goes in, `/`
+filters the pane (projects, lanes or log lines), and `?` lists every key. It follows the terminal's
+size and background: as it shrinks, the charts go first, then Details. It reads what the agents
+write and opens no connection of its own (a view it runs may: `sat-call`).
 
 Everything the command line does can be done from it, and it runs the same `sat` commands to do
 it: `s` start, `d` drain, `x` stop (asks first), `A` autostart, `c` check, `t` selftest, `u` update,
@@ -113,6 +118,9 @@ them all).
 | `stop` | stop now; running jobs go straight back to the hub |
 | `status` | running or not, autostart, the hub and its protocol, jobs in progress, disk room, the last log lines |
 | `logs` | follow the service log |
+| `alerts [-w]` | what needs attention ([alerts](#alerts)); with no PROJECT, or several, for all of them; `-w` keeps the list live |
+| `views` | the project's [views](projects.md#views): name, title, scope, mode, format |
+| `view NAME [--lane N] [-w]` | show one: once, or live with `-w` (a snapshot redrawn in place, a stream followed) until ctrl+c. A lane view picks the only lane with a job, else `--lane N` |
 | `check` | what this node is missing, and the commands that would install it. It checks in the environment the service will have (the user manager's, `systemctl --user show-environment`, plus the project's config and `env`), not your shell's: put PATH additions from shell profiles in `env` |
 | `install` | the same steps, shown and simulated, then run after you confirm |
 | `autostart on\|off` | start at boot, or not (off by default) |
@@ -158,6 +166,8 @@ avoids throwing away work in progress.
 | `SLOTS` | lanes: jobs run at the same time (default 1; the project's defaults may set it) |
 | `MIN_FREE_GB`, `MIN_FREE_PCT` | the node keeps the larger of these free on the disk under the project's directory (defaults 20 GB and 10 %) |
 | `MAX_GB` | caps this project's directory (default 0: no cap; a project's defaults may set one) |
+| `STALL_MIN` | minutes without new output from a lane's job before it is an [alert](#alerts) (default 30; 0: never) |
+| `JOB_WARN_MIN` | minutes a job may run before it is an alert (default: no limit) |
 | `TRANSPORT` | `native` (default): `sat` holds one SSH connection to the hub open; `exec`: it runs the system `ssh` with the alias for each call, as the bash node did (setup picks this when only the system ssh gets through, say through a jump host) |
 
 Projects may add their own keys (through `sat/defaults`) for their jobs to read. Keys may also go
@@ -167,6 +177,7 @@ in `~/.sat/config`, for every project on the node, along with:
 |---|---|
 | `AUTO_UPDATE` | `on`: install new releases unattended, between jobs (default: only say one exists) |
 | `PIN` | `vX.Y.Z`: stay on, or move to, exactly this release |
+| `NOTIFY` | `on`: a desktop notification for each new [alert](#alerts) (default off) |
 
 `~/.sat/projects/PROJECT/env`, if present, is sourced (with `set -a`) after the config by every job
 and project script, so its lines keep their shell meaning: `export TOOL_HOME="$HOME/.tool-b"`,
@@ -182,6 +193,35 @@ Below the free-space floor, or over `MAX_GB`, a lane takes no new jobs: it first
 `sat status` and in the live view. If free space falls below half the floor while a job runs, the
 job is stopped and handed back to the hub, so a full disk never takes the machine down with it. The
 project's size is measured at most every 30 minutes, at low priority.
+
+## Alerts
+
+Each agent watches for what someone should know about, and writes it, with its level and when it
+was first seen, into its state file. An alert clears itself when the condition ends.
+
+| alert | level | when |
+|---|---|---|
+| a lane stalled | warn | a job has shown nothing new for `STALL_MIN` minutes (default 30): no output, no progress line, no change to any other `state/slotN.*` file it keeps (a transcript, say) |
+| a long job | warn | a job has run for `JOB_WARN_MIN` minutes (unset: never) |
+| the hub unreachable | error | for more than 5 minutes |
+| a protocol mismatch | error | the hub speaks another protocol: nothing is claimed |
+| disk | warn | below the free-space floor, or over `MAX_GB`: no work is taken |
+| requirements | error | missing, so the service won't start (`sat PROJECT check`) |
+| restarts | error | the service started 3 times in 15 minutes |
+| the service failed | error | systemd reports it failed (seen by `status`, `alerts` and the live view, as the agent is gone) |
+| an update | info | a newer release is available |
+
+`STALL_MIN` and `JOB_WARN_MIN` are read from the project's config (or `~/.sat/config`) as they
+change. `sat status` adds a line per alert, `sat alerts` lists them (`-w` keeps it live), and the
+live view badges the project, lists them under its Alerts tab (`!`), and counts them in Details.
+A view's own `alert` blocks show there too ([projects.md](projects.md#json-views)). An agent that is
+not running keeps only the alerts that say why (requirements, restarts).
+
+**Desktop notifications** are off by default. With `NOTIFY=on` in `~/.sat/config`, each agent sends
+one through `notify-send` for each new alert, never again while it stays (a restart of the agent
+remembers what it sent), and again only if it clears and comes back. The service has no session's
+environment, so the agent finds the session bus at `/run/user/UID/bus` when `DBUS_SESSION_BUS_ADDRESS`
+is unset; with no `notify-send` or no bus it logs why, once per alert.
 
 ## Updates
 

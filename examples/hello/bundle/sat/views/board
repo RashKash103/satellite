@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# sat-view: title=Board; scope=project; mode=snapshot; every=10; format=json
+# The same counts as the queue view, as blocks sat draws: a progress, a bar and a metric
+# (sat keeps the metric's recent values and draws them). docs/projects.md has the schema.
+declare -A n=([queue]=0 [running]=0 [done]=0 [failed]=0)
+if counts=$(sat-call get .counts 2>/dev/null); then
+  while read -r state c; do n[$state]=$c; done <<< "$counts"
+  alert=
+else
+  alert='{"type": "alert", "level": "warn", "text": "the hub can'"'"'t be reached: showing nothing new"},'
+fi
+total=$(( n[queue] + n[running] + n[done] + n[failed] ))
+finished=$(( n[done] + n[failed] ))
+cat <<JSON
+{"blocks": [ $alert
+  {"type": "progress", "label": "finished", "value": $(awk -v a=$finished -v b=$total 'BEGIN { printf "%.3f", b ? a / b : 0 }'), "note": "$finished of $total jobs"},
+  {"type": "bar", "title": "Jobs", "data": [
+    {"label": "queued", "value": ${n[queue]}}, {"label": "running", "value": ${n[running]}},
+    {"label": "passed", "value": ${n[done]}}, {"label": "failed", "value": ${n[failed]}}]},
+  {"type": "metric", "name": "queued", "value": ${n[queue]}, "unit": "jobs"}
+]}
+JSON

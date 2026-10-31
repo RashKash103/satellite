@@ -2,8 +2,13 @@
 # sat/job ID: run on the node for each claimed job. Exit 0 with the result words in $SAT_RESULT,
 # exit 1 with a reason line and a summary in $SAT_RESULT, anything else hands the job back.
 id=$1
+progress() { [ -z "$SAT_PROGRESS" ] || echo "$*" >> "$SAT_PROGRESS"; }   # unset on the bash node
 n=$(sat-call get "$id") || exit 2                      # the hub is unreachable: hand it back
 [ "$n" = crash ] && [ ! -e "$SAT_BASE/state/crashed-$id" ] && { touch "$SAT_BASE/state/crashed-$id"; exit 3; }
 [ "$n" = crash ] && n=10
 [[ "$n" =~ ^[0-9]+$ ]] || { printf 'not a number\nthe job held: %s\n' "$n" > "$SAT_RESULT"; exit 1; }
+echo "$id: sha256 of seq $n"
+progress "50% hashing $n numbers"
 echo "sha256 $(seq "$n" | sha256sum | cut -c1-16) on lane $SAT_SLOT" > "$SAT_RESULT"
+echo "$id: $(cat "$SAT_RESULT")"
+progress "100% done"

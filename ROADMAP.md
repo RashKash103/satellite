@@ -27,6 +27,19 @@ the legacy reference.
 Still to do: the first tagged release, and running the Go node across two machines for a while
 before the bash node is retired.
 
+## Done: views and alerts
+
+- **Project views:** a bundle's `sat/views/NAME` shows the project's or a lane's state, once or live,
+  as text or as JSON blocks sat draws (tables, progress, bars, timelines, metrics with their recent
+  values, line charts, alerts), in `sat PROJECT view NAME` and as tabs in the live view. It adds
+  to the bundle contract and changes nothing in it.
+- **Alerts:** the agent raises and clears its own (a stalled lane, a long job, the hub unreachable,
+  a protocol mismatch, disk holding work back, missing requirements, repeated restarts, an update);
+  `sat status`, `sat alerts` and the live view show them, and `NOTIFY=on` sends a desktop
+  notification once per new one.
+- **The live view** gives way as the terminal shrinks, scrolls every pane, and charts this machine's
+  CPU, memory and load and each project's disk room.
+
 ## Next: the hub
 
 - A Go `sat-hub` and gate in the same binary, with the bash hub as the reference until it matches.

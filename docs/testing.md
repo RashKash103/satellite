@@ -29,9 +29,13 @@ a fake `systemctl` that only records what it is asked. It checks:
 - the exec transport (the system ssh, through a shim);
 - `sat uninstall`: asks, lists what it removes and what `install` ran, has the hub forget only this
   node's key line, removes the rest;
-- `sat migrate` from the bash layout, with the bundle's `sat/moved`.
+- `sat migrate` from the bash layout, with the bundle's `sat/moved`;
+- the hello example's views against the running agent: listed, run once (asking the hub through
+  `sat-call`), and a lane's stream followed as the job goes and stopped by ctrl+c;
+- an alert raised by the agent (the disk floor), listed by `alerts` and `status`, notified once
+  through a fake `notify-send`, and cleared.
 
-It takes about 40 seconds and needs bash and coreutils. Timings are shortened with
+It takes about 50 seconds and needs bash and coreutils. Timings are shortened with
 `SAT_TEST_FAST=1`.
 
 ## `test/run`
