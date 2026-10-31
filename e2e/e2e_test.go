@@ -514,7 +514,7 @@ func TestRequirementGate(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("the agent started although something is missing")
 	}
-	if !strings.Contains(a.out.String(), "this node is missing what hello needs") || !exists(h.hello+"/queue/j1") {
+	if !strings.Contains(a.out.String(), "this node is missing what hello needs, so not starting: apt sat-test-pkg") || !exists(h.hello+"/queue/j1") {
 		t.Fatal(a.out.String())
 	}
 	out, err := n.sat("hello", "check")

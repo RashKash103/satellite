@@ -69,6 +69,15 @@ func Of(req string, mk func(string) *exec.Cmd) []Step {
 	return s
 }
 
+// Lines: the steps as plan lines, "apt a b; run x; note y".
+func Lines(steps []Step) string {
+	l := make([]string, len(steps))
+	for i, s := range steps {
+		l[i] = s.Kind + " " + s.Rest
+	}
+	return strings.Join(l, "; ")
+}
+
 func AptLine(pkgs string) string { return "sudo apt-get install --no-remove " + pkgs }
 
 // Show: the plan as commands to run by hand.

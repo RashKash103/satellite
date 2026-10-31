@@ -271,7 +271,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		return err
 	}
 	if s := plan.Of(Script(p, "requirements"), func(s string) *exec.Cmd { return Command(a.env, s) }); len(s) > 0 {
-		a.Logf("this node is missing what %s needs (see: sat %s check); not starting", p.Name, p.Name)
+		a.Logf("this node is missing what %s needs, so not starting: %s (sat %s check shows the commands)", p.Name, plan.Lines(s), p.Name)
 		a.mu.Lock()
 		a.st.Note = "missing requirements: sat " + p.Name + " check"
 		a.mu.Unlock()
