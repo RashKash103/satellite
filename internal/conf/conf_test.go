@@ -10,7 +10,7 @@ func TestParseLine(t *testing.T) {
 	env := map[string]string{"HOME": "/h", "PATH": "/usr/bin"}
 	get := func(k string) string { return env[k] }
 	for _, c := range []struct{ in, k, v string }{
-		{"HUB=sat-hub-10.0.0.1", "HUB", "sat-hub-10.0.0.1"},
+		{"HUB=sat-hub-192.0.2.1", "HUB", "sat-hub-192.0.2.1"},
 		{"SAT_NAME=box   # bound to this node's key on the hub", "SAT_NAME", "box"},
 		{"export PATH=$HOME/bin:$PATH", "PATH", "/h/bin:/usr/bin"},
 		{`X="a b $HOME"`, "X", "a b /h"},

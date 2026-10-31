@@ -1,26 +1,55 @@
 # Testing
 
-## The end-to-end test
-
 ```sh
-test/run
+go test ./...     # the Go node: unit tests, and the end-to-end test against the bash hub
+test/run          # the hub, and the legacy bash node, end to end
 ```
 
-It runs a hub and a node on one machine, in a scratch directory, without sshd: an `ssh` shim on
-`PATH` drops ssh's options and host and hands the rest to the real `sat-ssh-gate` as
-`SSH_ORIGINAL_COMMAND`, which is what sshd does for a node key. It checks:
+Both run a hub and a node on one machine, in scratch directories, without sshd or a second
+machine, and touch nothing outside them. CI runs both, `go vet` and ShellCheck on every push.
+
+## The Go end-to-end test (`e2e/`)
+
+It runs the real bash hub (`hub/sat-hub`, `hub/sat-ssh-gate`, `examples/hello`) behind an SSH
+server inside the test, written with Go's `x/crypto/ssh`: each node key is bound to a node name,
+and each command runs the gate with `SSH_ORIGINAL_COMMAND`, as sshd does for a node key. The node is
+the real `sat` (the test binary plays it) with its own `HOME`, a `known_hosts` for the test hub, and
+a fake `systemctl` that only records what it is asked. It checks:
+
+- jobs that pass, fail, and crash and are retried; no leases left; a drain stops the agent;
+- `sat/ready` holding claims back; a lost lease killing the job's process group; progress from
+  `$SAT_PROGRESS` in `state/agent.json`;
+- the disk floor (sat/clean runs first, then no claims, said once) and a job stopped and handed back
+  when the disk is nearly full;
+- the project's `env` reaching jobs with shell semantics, and `sat PROJECT env`;
+- two projects on one node: a second `sat setup` reusing the key and alias, each with its own lanes;
+- a hub with another protocol, and one too old to state it: no claims, and why;
+- the requirement gate: the agent won't start, `check`, `start` and `install` say what is missing
+  and install nothing;
+- the exec transport (the system ssh, through a shim);
+- `sat uninstall`: asks, lists what it removes and what `install` ran, has the hub forget only this
+  node's key line, removes the rest;
+- `sat migrate` from the bash layout, with the bundle's `sat/moved`.
+
+It takes about 40 seconds and needs bash and coreutils. Timings are shortened with
+`SAT_TEST_FAST=1`.
+
+## `test/run`
+
+An `ssh` shim on `PATH` drops ssh's options and host and hands the rest to the real `sat-ssh-gate`
+as `SSH_ORIGINAL_COMMAND`. It checks:
 
 - the gate's refusals, that it runs no shell on what it is sent, and that a key acts only as its
   own node;
+- `sat-hub --protocol`, and `sat-hub --forget`: only through the gate, only the caller's own lines;
 - the push guard: pushes under the prefix pass, others are refused;
 - leases: only the owner can renew or report a job, and a silent lease is reaped back;
-- a node agent running `examples/hello` with two lanes: a job that passes, one that fails, one
-  that crashes and is retried, and a drain;
+- the bash node agent running `examples/hello` with two lanes: the disk floor, `sat/ready`, a job
+  that passes, one that fails, one that crashes and is retried, and a drain;
 - requirement checks: what is missing is reported with its commands, and an install with no one at
   a terminal to confirm runs nothing.
 
-It takes about 30 seconds and needs bash, git and flock. It touches nothing outside its scratch
-directory. CI runs it, and ShellCheck, on every push.
+It takes about 30 seconds and needs bash, git and flock.
 
 ## Testing your own project
 
@@ -29,10 +58,11 @@ queues and the checks. The same shim lets your project's `sat/job` run against y
 one machine. Two environment variables point Satellite at the scratch directory:
 
 - `SAT_CONF`: the hub's config directory (default `~/.config/sat`);
-- `HOME`: where the node keeps `~/sat/PROJECT/`.
+- `HOME`: where the node keeps its projects.
 
 If your hooks write to fixed paths, give them an override for tests, as `examples/hello` does with
 `HELLO_DIR`.
 
-Things the test can't cover: `sat-setup`'s real SSH key exchange, systemd units, and lingering. Try
-those on a real node with the hello example before pointing one at real work.
+Things the tests can't cover: `sat setup`'s real key exchange through your own login, systemd
+units, lingering and self-update from real releases. Try those on a real node with the hello example
+before pointing one at real work.

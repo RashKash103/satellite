@@ -39,7 +39,7 @@ Things to get right:
 
 ## The bundle
 
-A directory tree with at least `sat/job`. Nodes keep it in `~/sat/PROJECT/bundle/` (`$SAT_BUNDLE`)
+A directory tree with at least `sat/job`. Nodes keep it in `~/.sat/projects/PROJECT/bundle/` (`$SAT_BUNDLE`)
 and replace it whole when the hub's copy changes; anything a job wants to keep belongs in
 `$SAT_BASE/state/`.
 
@@ -48,12 +48,15 @@ and replace it whole when the hub's copy changes; anything a job wants to keep b
 | `sat/job ID WORDS...` | **required.** Runs one job; see below. |
 | `sat/defaults` | lines added to the node's config at setup, e.g. `SLOTS=2` |
 | `sat/requirements` | prints what this node lacks for the jobs, as plan lines (below); nothing when it has it all |
-| `sat/setup` | prepares the project's files under `$SAT_BASE` (a clone, a cache); run by `sat-setup` and `sat update` once nothing is missing. Make it safe to rerun, and never install software from it. |
+| `sat/setup` | prepares the project's files under `$SAT_BASE` (a clone, a cache); run by `sat setup` and `sat update` once nothing is missing. Make it safe to rerun, and never install software from it. |
 | `sat/sync` | keeps node-side data current; run at agent start and hourly |
 | `sat/selftest` | `sat PROJECT selftest`: check that this node can do the work |
 | `sat/clean` | the node is low on disk (see [node.md](node.md#disk-space)): remove what the project can rebuild, such as build output, without touching lanes at work (`$SAT_BASE/state/slotN.claim` exists while lane N has a job) |
 | `sat/ready` | run before each claim (with `SAT_SLOT`); exit non-zero to claim nothing for now, e.g. while this node's own quota or a local condition says to wait. Keep it fast. |
+| `sat/moved OLD NEW` | `sat migrate` moved the project's directory from OLD (`~/sat/PROJECT`) to NEW (`~/.sat/projects/PROJECT`): repair whatever records the old path, such as git worktrees (`git -C "$NEW/repo" worktree repair "$NEW"/work/*`), absolute paths in the config or caches. Runs once, before the service starts again; a non-zero exit leaves the service stopped. |
 
+Every script runs as a job does (below): through bash, with `$SAT_BASE/config` and `$SAT_BASE/env`
+sourced and the `SAT_` variables set.
 The bundle can also carry the project's own scripts for jobs to call.
 
 ## Requirements: report, never install
@@ -67,11 +70,12 @@ A node is often someone's own workstation, so Satellite never installs software 
 | `run COMMAND` | any other install step, run as the user (write `sudo` in it if it needs root) |
 | `note TEXT` | something that has to be done by hand |
 
-Satellite adds its own needs (an SSH client, `tar`, systemd user services, ...) and then:
+Satellite adds its own needs (an SSH client, systemd user services; the bash node also wants `tar`
+and the like) and then:
 
-- `sat-setup`, `sat PROJECT check` and `sat PROJECT start` print the commands that would install
+- `sat setup`, `sat PROJECT check` and `sat PROJECT start` print the commands that would install
   what is missing, and stop. The user installs things themselves.
-- `sat-setup --install` and `sat PROJECT install` list every step first, simulate each apt step
+- `sat setup --install` and `sat PROJECT install` list every step first, simulate each apt step
   (`apt-get -s`) to show exactly which packages it would install or upgrade, ask once, and only then
   run them. apt always runs with `--no-remove`, so it stops instead of removing a package.
 - The agent will not start while anything is missing.
@@ -89,22 +93,26 @@ installer when the version is wrong), and print nothing when all is well.
 | `1` | failed | a reason line, then the summary |
 | other | couldn't run here: hand it back for another worker | ignored |
 
-It runs in its own process group, which is killed if the lease is lost, and its output goes to
-`~/sat/PROJECT/state/slotN.log`. Its environment:
+It runs in its own process group, which is killed if the lease is lost (or the disk is nearly
+full), and its output goes to `$SAT_BASE/state/slotN.log`. It starts through bash with the node's
+config and the project's `env` file sourced (`set -a`), so every setting in them is in its
+environment, with shell semantics. Besides those:
 
 | variable | |
 |---|---|
 | `SAT_PROJECT` | the project name |
-| `SAT_BASE` | `~/sat/PROJECT`: the config is `$SAT_BASE/config`, state goes in `$SAT_BASE/state/` |
+| `SAT_BASE` | `~/.sat/projects/PROJECT` (`~/sat/PROJECT` on the bash node): the config is `$SAT_BASE/config`, state goes in `$SAT_BASE/state/` |
 | `SAT_BUNDLE` | the bundle directory |
 | `SAT_SLOT` | the lane number, from 1; use it to keep lanes' work directories apart |
 | `SAT_NAME` | this node's name |
 | `SAT_RESULT` | the file to write the result to |
-| `PATH` | includes `sat-call` |
+| `SAT_PROGRESS` | a file the job may append progress lines to; the last one shows in the live view and `sat status`. A line may start with a percentage: `40% linking`. Optional, and new with the Go node: on the bash node it is unset, so write `[ -n "$SAT_PROGRESS" ] && echo ... >> "$SAT_PROGRESS"`. |
+| `PATH` | starts with `~/.sat/bin`, which holds `sat-call` |
 
 Talk to the hub with `sat-call COMMAND...` (`get`, `put`, `status`). For git, use the hub alias:
 `git fetch "$HUB:/path/to/repo" BRANCH`, `git push "$HUB:/path/to/repo" HEAD:refs/sat/$ID`. For
-directories, `rsync -a "$HUB:/path/to/data/" local/`. Source `$SAT_BASE/config` to get `HUB`.
+directories, `rsync -a "$HUB:/path/to/data/" local/`. `HUB` comes from the config (on the bash
+node, source `$SAT_BASE/config` to get it).
 
 Exit with "other" rather than 1 when the failure is the node's fault (a full disk, a network
 outage), so the job is retried elsewhere instead of being recorded as failed.

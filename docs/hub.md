@@ -80,8 +80,15 @@ journalctl --user -u sat-reaper   # the reaper
 What happened to each job is the project's business: the hooks record it wherever the project
 keeps its own records.
 
+## Updating the hub
+
+`git pull` in the checkout is all it takes: node keys run `~/.local/bin/sat-ssh-gate`, which links
+into it. Old and new nodes speak the same protocol to the same `sat-hub`; the Go node also needs
+`sat-hub --protocol`, so update the hub before you move nodes to the binary.
+
 ## Removing a node
 
-Delete its line from `~/.ssh/authorized_keys` (it ends in `sat@NODE`, and its command is
-`sat-ssh-gate NODE`). Any job it
-held goes back when its lease runs out.
+`sat uninstall` on the node asks the hub to forget its key (`sat-hub --forget` removes only that
+node's line). Without the node, delete its line from `~/.ssh/authorized_keys` yourself (it ends in
+`sat@NODE`, and its command is `sat-ssh-gate NODE`). Any job it held goes back when its lease runs
+out.

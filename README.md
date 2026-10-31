@@ -10,7 +10,8 @@
 
 **Lend a second machine's CPU to a build pipeline for as long as it happens to be on.**
 
-![Shell](https://img.shields.io/badge/100%25-bash-4EAA25)
+![Go](https://img.shields.io/badge/node-Go-00ADD8)
+![Shell](https://img.shields.io/badge/hub-bash-4EAA25)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%2B%20systemd-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Status](https://img.shields.io/badge/status-early-orange)
@@ -29,20 +30,24 @@ for it.
 - **Locked-down keys.** A node's key can only reach what its project file allows: fetch named git
   repositories, push under one ref prefix, copy named directories out, and talk to the lease engine.
 - **Easy on and off.** `sat start`, `sat drain` (finish what's running, then stop), `sat stop`,
-  `sat autostart on|off`. A node is a systemd user service.
+  `sat autostart on|off`. A node is a systemd user service, and `sat` alone is a live view of its
+  lanes, their jobs and progress.
+- **One binary on the node.** `sat`, a static Go binary, with nothing else to install. It updates
+  itself only when you ask (from this repository's releases, checksummed and attested), and
+  `sat uninstall` takes it all away again.
 - **Installs nothing behind your back.** Setup checks the node and lists what's missing with the
   commands to install it. `--install` runs them only after showing each one (apt changes
   simulated, never removing a package) and asking.
 - **Minds the disk.** A node keeps 20 GB or 10 % of its disk free (whichever is more), asks the
   project to clean up when it runs low, and stops taking work rather than fill the disk.
-- **Plain bash.** No daemon to install on the hub beyond a one-minute reaper, and no database:
+- **Plain bash on the hub.** No daemon to install beyond a one-minute reaper, and no database:
   leases are files.
 
 ## How it works
 
 ```mermaid
 sequenceDiagram
-    participant N as Node (sat-agent)
+    participant N as Node (sat agent)
     participant G as Hub: sat-ssh-gate
     participant H as Hub: sat-hub + your hooks
     N->>G: ssh … sat-hub PROJECT claim
@@ -70,20 +75,28 @@ cp ~/satellite/examples/hello/project ~/.config/sat/projects/hello   # edit HOOK
 
 The hub also needs `sshd`, with key-only logins ([docs/hub.md](docs/hub.md)).
 
-On the **node** (the part-time machine), once it can already log in to the hub with an SSH key:
+On the **node** (the part-time machine), once it can already log in to the hub with an SSH key,
+get the binary ([docs/node.md](docs/node.md#2-get-the-binary) has the checksum and attestation
+checks) and let it set itself up:
 
 ```sh
-scp HUB_USER@HUB:satellite/node/sat-setup ~/ && bash ~/sat-setup HUB_IP hello HUB_USER
+arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+curl -fsSLO https://github.com/RashKash103/satellite/releases/latest/download/sat_linux_$arch
+chmod +x sat_linux_$arch && ./sat_linux_$arch setup HUB_IP hello HUB_USER   # installs itself in ~/.sat/bin
 sat hello check          # what's missing, if anything, and how to install it
 sat hello selftest
 sat hello start
+sat                      # the live view
 ```
+
+(or `go install github.com/RashKash103/satellite/cmd/sat@latest` and `sat setup ...`). A node set
+up with the earlier bash scripts moves over with `sat migrate`.
 
 Then give the hub some work and watch it come back:
 
 ```sh
 mkdir -p ~/.local/share/sat-hello/queue && echo 2000000 > ~/.local/share/sat-hello/queue/job1   # on the hub
-sat hello logs                                          # on the node
+sat hello logs                                          # on the node, or just: sat
 cat ~/.local/share/sat-hello/done/job1                  # on the hub
 ```
 
@@ -93,18 +106,19 @@ cat ~/.local/share/sat-hello/done/job1                  # on the hub
 |---|---|
 | [How it works](docs/how-it-works.md) | roles, the lease lifecycle, what happens when a node vanishes |
 | [Hub setup](docs/hub.md) | install, project files, sshd, the reaper, watching it |
-| [Node setup and control](docs/node.md) | key login, `sat-setup`, the `sat` command, node config |
+| [Node setup and control](docs/node.md) | key login, the binary, `sat setup`, the `sat` command and live view, node config, updates, uninstall, migrating |
 | [Writing a project](docs/projects.md) | the hooks contract, the bundle, the job environment, a walkthrough of `examples/hello` |
 | [Security](docs/security.md) | what a node key can and can't do, and what you are trusting |
 | [Testing](docs/testing.md) | the end-to-end test, and testing your own project without a second machine |
-| [Roadmap](ROADMAP.md) | the Go port: a live view, one binary, updates, uninstall |
+| [Roadmap](ROADMAP.md) | what is done of the Go port, and what is next |
 
 ## Requirements
 
-- **Both:** Linux, bash 4.4+, OpenSSH, coreutils, `tar`, `gzip`.
-- **Hub:** an SSH server, `flock` (util-linux), and `git` and `rsync` if your projects use them.
-- **Node:** systemd with user services (and `loginctl enable-linger` so the service runs without
-  a login session).
+- **Hub:** Linux, bash 4.4+, coreutils, `tar`, `gzip`, an SSH server, `flock` (util-linux), and
+  `git` and `rsync` if your projects use them.
+- **Node:** Linux (amd64 or arm64), bash (jobs run through it), an OpenSSH client, and systemd with
+  user services (and `loginctl enable-linger` so the service runs without a login session). The
+  legacy bash node also needs coreutils, `tar`, `gzip`, `setsid` and `diff`.
 
 ## Layout
 
@@ -114,20 +128,18 @@ hub/sat-hub          lease engine: claim, renew, ok, fail, release, get/put, bun
 hub/sat-ssh-gate     forced command for node keys
 hub/sat-reaper       reaps silent leases every minute (hub/sat-reaper.service runs it)
 hub/pre-receive      git hook: pushes through the gate may write only the project's PUSH_PREFIX
-node/sat-setup       one-time node setup for a project
-node/sat-agent       the node's service: N lanes claiming and running jobs
-node/sat             control: start, stop, drain, status, logs, autostart, selftest, update
-node/sat-call        call the hub's sat-hub from a job
-node/sat-lib         requirement checks and confirmed installs
-node/sat@.service    systemd user unit, one instance per project
+cmd/sat/             the node: one binary (agent, control command, live view, sat-call for jobs)
+internal/            its packages: agent, hub (SSH), bundle, plan (requirements), tui, selfupdate, cli
+e2e/                 end-to-end test of the Go node against the bash hub
+node/                the legacy bash node (sat-setup, sat-agent, sat, sat-call, sat-lib, sat@.service)
 examples/hello/      a complete small project
 test/run             end-to-end test on one machine
 ```
 
 ## Contributing
 
-Issues and pull requests are welcome. Run `test/run` and
-[ShellCheck](https://www.shellcheck.net/) before you send a change; CI runs both.
+Issues and pull requests are welcome. Run `go vet ./...`, `go test ./...`, `test/run` and
+[ShellCheck](https://www.shellcheck.net/) before you send a change; CI runs them all.
 
 ## License
 
