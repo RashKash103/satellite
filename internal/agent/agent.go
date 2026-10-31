@@ -83,9 +83,12 @@ func (a *Agent) Logf(f string, v ...any) {
 
 // Env: the environment for the project's scripts: the agent's, with the SAT_ variables. The
 // config and the project's env file are added by the shell that starts each script (Command).
-func Env(p *conf.Project) []string {
+func Env(p *conf.Project) []string { return EnvFrom(os.Environ(), p) }
+
+// EnvFrom: Env with base in place of this process's environment.
+func EnvFrom(base []string, p *conf.Project) []string {
 	var env []string
-	for _, kv := range os.Environ() {
+	for _, kv := range base {
 		if k, _, _ := strings.Cut(kv, "="); k != "SAT_PROJECT" && k != "SAT_BASE" && k != "SAT_BUNDLE" && k != "SAT_NAME" {
 			env = append(env, kv)
 		}

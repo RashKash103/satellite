@@ -101,7 +101,7 @@ them all).
 | `stop` | stop now; running jobs go straight back to the hub |
 | `status` | running or not, autostart, the hub and its protocol, jobs in progress, disk room, the last log lines |
 | `logs` | follow the service log |
-| `check` | what this node is missing, and the commands that would install it |
+| `check` | what this node is missing, and the commands that would install it. It checks in the environment the service will have (the user manager's, `systemctl --user show-environment`, plus the project's config and `env`), not your shell's: put PATH additions from shell profiles in `env` |
 | `install` | the same steps, shown and simulated, then run after you confirm |
 | `autostart on\|off` | start at boot, or not (off by default) |
 | `selftest` | the project's own check of this node |

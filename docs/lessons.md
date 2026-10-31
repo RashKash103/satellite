@@ -124,6 +124,11 @@ These apply to Claude Code; other agents have their own versions of the same iss
 - **Read tool versions carefully.** Some print several lines with a version on each; take the first
   (`awk 'NR==1'`).
 - **Pin what jobs rely on**, and check the pinned version, not just presence.
+- **Services don't see shell PATH additions.** A systemd service reads no shell profile, so tools
+  that nvm, cargo or `~/.local/bin` put on your shell's PATH are missing for it: a check run from
+  that shell passed while the service refused to start. Put such lines in the project's `env` file
+  (`. "$HOME/.nvm/nvm.sh"`, `PATH=$HOME/.cargo/bin:$PATH`), and check in the service's environment
+  (`sat PROJECT check` does: the user manager's, plus the project's config and `env`).
 - **Ship what the checks read.** If a check needs a file from the hub (a toolchain pin), put it in
   the bundle; the node may not have a clone yet when the check first runs.
 

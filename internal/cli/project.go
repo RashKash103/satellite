@@ -42,7 +42,10 @@ func project(name, cmd string, a []string) int {
 	case "start":
 		return start(p)
 	case "check":
-		if !plan.Check(os.Stdout, planOf(p), p.Name) {
+		steps, svc := planEnv(p)
+		ok := plan.Check(os.Stdout, steps, p.Name)
+		fmt.Println(envNote(svc))
+		if !ok {
 			return 1
 		}
 	case "install":
@@ -90,9 +93,24 @@ func project(name, cmd string, a []string) int {
 	return 0
 }
 
+// planOf: what the project's node is missing, checked in the environment its service will
+// have (agent.CheckEnv), not this shell's.
 func planOf(p *conf.Project) []plan.Step {
-	env := agent.Env(p)
-	return plan.Of(agent.Script(p, "requirements"), func(s string) *exec.Cmd { return agent.Command(env, s) })
+	s, _ := planEnv(p)
+	return s
+}
+
+func planEnv(p *conf.Project) ([]plan.Step, bool) {
+	env, svc := agent.CheckEnv(p)
+	return plan.Of(agent.Script(p, "requirements"), func(s string) *exec.Cmd { return agent.Command(env, s) }), svc
+}
+
+// envNote: which environment a check ran in.
+func envNote(svc bool) string {
+	if svc {
+		return "(checked in the environment the service runs with: the user manager's, as systemctl --user show-environment gives it, plus the project's config and env file)"
+	}
+	return "(checked in this shell's environment: the user manager's could not be read)"
 }
 
 func code(err error) int {
@@ -119,8 +137,9 @@ func claims(p *conf.Project) []string {
 }
 
 func start(p *conf.Project) int {
-	if !plan.Check(io.Discard, planOf(p), p.Name) {
-		plan.Check(os.Stdout, planOf(p), p.Name)
+	if steps, svc := planEnv(p); len(steps) > 0 {
+		plan.Check(os.Stdout, steps, p.Name)
+		fmt.Println(envNote(svc))
 		return 1
 	}
 	os.Remove(filepath.Join(p.State, "drain"))
@@ -232,6 +251,11 @@ func status(p *conf.Project) {
 			if b, _ := os.ReadFile(f); len(b) > 0 {
 				fmt.Printf("lane %s: %s\n", strings.TrimSuffix(strings.TrimPrefix(filepath.Base(f), "slot"), ".claim"), strings.TrimSpace(string(b)))
 			}
+		}
+	}
+	if state != "active" {
+		if steps := planOf(p); len(steps) > 0 {
+			fmt.Printf("requirements: %d missing, so the service won't start (sat %s check)\n", len(steps), p.Name)
 		}
 	}
 	d := agent.Measure(p, true)
