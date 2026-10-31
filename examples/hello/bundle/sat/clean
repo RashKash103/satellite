@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# sat/clean: the node is low on disk. Remove what this project can rebuild, leaving lanes at work
+# alone ($SAT_BASE/state/slotN.claim exists while lane N has a job). hello keeps nothing to clean.
+touch "$SAT_BASE/state/cleaned"

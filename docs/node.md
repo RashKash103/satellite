@@ -79,7 +79,17 @@ avoids throwing away work in progress.
 | `SAT_NAME` | this node's name in leases and results: the short hostname. It is bound to the node's key on the hub, so change it in both places, or rerun `sat-setup` after renaming the machine. |
 | `SLOTS` | lanes: jobs run at the same time (default 1; the project's defaults may set it) |
 
+| `MIN_FREE_GB`, `MIN_FREE_PCT` | the node keeps the larger of these free on the disk under `~/sat` (defaults 20 GB and 10 %) |
+| `MAX_GB` | caps this project's directory (default 0: no cap; a project's defaults may set one) |
+
 Projects may add their own keys (through `sat/defaults`) for their jobs to read.
+
+### Disk space
+
+Below the free-space floor, or over `MAX_GB`, a lane takes no new jobs: it first runs the project's
+`sat/clean`, if it has one, and then waits until there is room, saying why in the log and in
+`sat status`. If free space falls below half the floor while a job runs, the job is stopped and
+handed back to the hub, so a full disk never takes the machine down with it.
 
 `~/sat/PROJECT/env`, if present, is sourced by the agent before any job runs; use it for
 node-local environment such as `PATH` additions.

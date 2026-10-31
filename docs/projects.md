@@ -51,6 +51,8 @@ and replace it whole when the hub's copy changes; anything a job wants to keep b
 | `sat/setup` | prepares the project's files under `$SAT_BASE` (a clone, a cache); run by `sat-setup` and `sat update` once nothing is missing. Make it safe to rerun, and never install software from it. |
 | `sat/sync` | keeps node-side data current; run at agent start and hourly |
 | `sat/selftest` | `sat PROJECT selftest`: check that this node can do the work |
+| `sat/clean` | the node is low on disk (see [node.md](node.md#disk-space)): remove what the project can rebuild, such as build output, without touching lanes at work (`$SAT_BASE/state/slotN.claim` exists while lane N has a job) |
+| `sat/ready` | run before each claim (with `SAT_SLOT`); exit non-zero to claim nothing for now, e.g. while this node's own quota or a local condition says to wait. Keep it fast. |
 
 The bundle can also carry the project's own scripts for jobs to call.
 

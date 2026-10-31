@@ -33,6 +33,8 @@ for it.
 - **Installs nothing behind your back.** Setup checks the node and lists what's missing with the
   commands to install it. `--install` runs them only after showing each one (apt changes
   simulated, never removing a package) and asking.
+- **Minds the disk.** A node keeps 20 GB or 10 % of its disk free (whichever is more), asks the
+  project to clean up when it runs low, and stops taking work rather than fill the disk.
 - **Plain bash.** No daemon to install on the hub beyond a one-minute reaper, and no database:
   leases are files.
 

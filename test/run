@@ -91,11 +91,22 @@ echo "== node agent (hello example)"
 B=$HOME/sat/hello
 mkdir -p "$HOME/sat/bin" "$B/state" "$B/bundle"
 install -m 755 "$ROOT/node/sat-agent" "$ROOT/node/sat-call" "$HOME/sat/bin/"; install -m 644 "$ROOT/node/sat-lib" "$HOME/sat/bin/"
-printf 'HUB=hub\nSAT_NAME=testnode\nSLOTS=2\n' > "$B/config"
+printf 'HUB=hub\nSAT_NAME=testnode\nSLOTS=2\nMIN_FREE_GB=0\nMIN_FREE_PCT=0\n' > "$B/config"
 echo 1000 > "$q/good"; echo oops > "$q/bad"; echo crash > "$q/crashy"
+# Disk floor: with 100 % to keep free, the agent cleans once and takes nothing.
+sed -i 's/^MIN_FREE_PCT=0/MIN_FREE_PCT=100/' "$B/config"
+"$HOME/sat/bin/sat-agent" hello > "$T/agent-disk.log" 2>&1 & agent=$!
+if wait_for 30 "grep -q 'not taking work' '$T/agent-disk.log'"; then ok "low disk: no claims"; else no "low disk: still claiming"; fi
+check "low disk: sat/clean ran first" test -f "$B/state/cleaned"
+check "low disk: the jobs are still queued" test -f "$q/good"
+touch "$B/state/drain"; wait_for 30 "! kill -0 $agent 2>/dev/null" || kill $agent; rm -f "$B/state/drain"
+sed -i 's/^MIN_FREE_PCT=100/MIN_FREE_PCT=0/' "$B/config"
+touch "$B/state/hold"   # sat/ready holds the lanes back until it goes
 "$HOME/sat/bin/sat-agent" hello > "$T/agent.log" 2>&1 & agent=$!
 d=$HELLO_DIR
-if wait_for 60 '[ -f $d/done/good ] && [ -f $d/done/crashy ] && [ -f $d/failed/bad ]'; then ok "all three jobs finished"; else no "jobs did not finish"; fi
+sleep 3; check "sat/ready holds claims back" test -z "$(find "$d/running" "$d/done" "$d/failed" -type f)"
+rm "$B/state/hold"
+if wait_for 90 '[ -f $d/done/good ] && [ -f $d/done/crashy ] && [ -f $d/failed/bad ]'; then ok "all three jobs finished"; else no "jobs did not finish"; fi
 check "a passing job's result reached the hub" grep -q 'sha256 .* (by testnode)' "$d/done/good"
 check "a failing job's reason and summary reached the hub" bash -c "grep -q 'not a number' '$d/failed/bad' && grep -q 'the job held: oops' '$d/failed/bad'"
 check "a crashed job was handed back and passed on retry" grep -q 'handing it back' "$T/agent.log"

@@ -27,6 +27,18 @@ sync_project() { [ -x "$SAT_BUNDLE/sat/sync" ] && "$SAT_BUNDLE/sat/sync"; }
 lane() {
   local slot=$1 line id job rc t res=$ST/slot$1.result
   while [ ! -e "$ST/drain" ]; do
+    # sat/ready, if the project has one, can hold this node back (e.g. its own usage limit): no claim.
+    if [ -x "$SAT_BUNDLE/sat/ready" ] && ! SAT_SLOT=$slot "$SAT_BUNDLE/sat/ready" >> "$ST/slot$slot.log" 2>&1; then nap 60; continue; fi
+    # Disk: below the floor (or over MAX_GB), let the project clean up once, then wait for room.
+    if ! sat_disk_ok; then
+      if [ -x "$SAT_BUNDLE/sat/clean" ] && flock -n "$ST/clean.lock" -c "\"$SAT_BUNDLE/sat/clean\" >> \"$ST/clean.log\" 2>&1"; then
+        rm -f "$ST/du"; log "[$slot] low on disk: ran sat/clean ($(sat_disk_why))"
+      fi
+      if ! sat_disk_ok; then
+        [ -n "$(find "$ST/disk.note" -mmin -30 2>/dev/null)" ] || { touch "$ST/disk.note"; log "[$slot] not taking work: $(sat_disk_why)"; }
+        nap 300; continue
+      fi
+    fi
     line=$(sat-call claim "$SAT_NAME" "$slot") || { log "[$slot] hub unreachable"; nap 60; continue; }
     [ -z "$line" ] && { nap 45; continue; }
     id=${line%% *}; echo "$id" > "$ST/slot$slot.claim"; rm -f "$res"; log "[$slot] claimed $id"
@@ -37,6 +49,7 @@ lane() {
       [ $((t % 120)) -eq 0 ] || continue
       sat-call renew "$SAT_NAME" "$id"
       [ $? -eq 3 ] && { log "[$slot] lease on $id lost: stopping it"; kill -TERM -- -$job 2>/dev/null; }
+      sat_disk_ok 2 || { log "[$slot] disk nearly full ($(sat_disk_why)): stopping $id, handing it back"; kill -TERM -- -$job 2>/dev/null; }
     done
     wait $job; rc=$?
     case $rc in
@@ -49,9 +62,9 @@ lane() {
   done
 }
 
-log "starting $SAT_PROJECT on $SAT_NAME: ${SLOTS:-1} lane(s), hub $HUB"
-sync_bundle || { log "cannot reach the hub"; exit 1; }
 . "$HOME/sat/bin/sat-lib"
+log "starting $SAT_PROJECT on $SAT_NAME: ${SLOTS:-1} lane(s), hub $HUB, disk: $(sat_disk_why)"
+sync_bundle || { log "cannot reach the hub"; exit 1; }
 [ -z "$(sat_plan "$SAT_BUNDLE")" ] || { log "this node is missing what $SAT_PROJECT needs (see: sat $SAT_PROJECT check); not starting"; exit 0; }
 sync_project
 for s in $(seq 1 "${SLOTS:-1}"); do lane "$s" & done
