@@ -17,10 +17,11 @@ import (
 // the filesystem under the project's directory free, and MAX_GB (default 0: no cap) caps that
 // directory. The settings are read from the config at each check, so a change applies at once.
 type Disk struct {
-	Avail int64 `json:"avail"` // bytes free for us
-	Need  int64 `json:"need"`  // the floor
-	Used  int64 `json:"used"`  // the project's size (0: not measured)
-	Cap   int64 `json:"cap"`   // MAX_GB in bytes, 0: none
+	Avail int64 `json:"avail"`          // bytes free for us
+	Need  int64 `json:"need"`           // the floor
+	Used  int64 `json:"used"`           // the project's size (0: not measured)
+	Cap   int64 `json:"cap"`            // MAX_GB in bytes, 0: none
+	Size  int64 `json:"size,omitempty"` // the filesystem's size
 }
 
 const gb = 1 << 30
@@ -63,7 +64,7 @@ func Measure(p *conf.Project, size bool) Disk {
 	var d Disk
 	var s syscall.Statfs_t
 	if syscall.Statfs(p.Base, &s) == nil {
-		d.Avail = int64(s.Bavail) * int64(s.Bsize)
+		d.Avail, d.Size = int64(s.Bavail)*int64(s.Bsize), int64(s.Blocks)*int64(s.Bsize)
 		d.Need = max(setting(m, "MIN_FREE_GB", 20)*gb, int64(s.Blocks)*int64(s.Bsize)*setting(m, "MIN_FREE_PCT", 10)/100)
 	}
 	d.Cap = setting(m, "MAX_GB", 0) * gb

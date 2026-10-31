@@ -24,6 +24,7 @@ import (
 	"github.com/RashKash103/satellite/internal/conf"
 	"github.com/RashKash103/satellite/internal/hub"
 	"github.com/RashKash103/satellite/internal/plan"
+	"github.com/RashKash103/satellite/internal/selfupdate"
 )
 
 // ErrRestart: the binary on disk was replaced; the caller re-executes it.
@@ -46,6 +47,7 @@ type Agent struct {
 	Out     io.Writer // the log also goes to state/agent.log
 	// Between calls the agent may ask whether to restart for an update (AUTO_UPDATE); may be nil.
 	Update func(ctx context.Context, log func(string, ...any)) bool
+	Notify Notifier // desktop notifications for new alerts (NOTIFY=on in ~/.sat/config)
 
 	name    string
 	env     []string
@@ -62,6 +64,11 @@ type Agent struct {
 	logMu    sync.Mutex
 	clean    sync.Mutex // one sat/clean at a time
 	diskNote time.Time  // the last "not taking work" line
+	// for the alerts
+	hubDown  time.Time // the hub stopped answering
+	diskSeen bool      // the disk has been measured
+	missing  string    // requirements missing
+	starts   int       // starts within RestartWindow
 }
 
 func (a *Agent) Logf(f string, v ...any) {
@@ -216,8 +223,47 @@ func (a *Agent) writeState(running bool) {
 			s.Lanes[i].Progress, s.Lanes[i].Percent = Progress(filepath.Join(a.P.State, fmt.Sprintf("slot%d.progress", s.Lanes[i].Slot)))
 		}
 	}
+	s.Alerts = a.alerts(s)
 	b, _ := jsonIndent(s)
 	conf.WriteAtomic(StatePath(a.P), b, 0o644)
+}
+
+// alerts: what holds now (Evaluate), kept in a.st for the next round; new ones are notified.
+func (a *Agent) alerts(s State) []Alert {
+	m, err := conf.Parse(filepath.Join(a.P.Base, "config"), nil)
+	if err != nil {
+		m = a.P.Conf
+	}
+	setting := func(k string, def int) int {
+		if _, ok := m[k]; ok {
+			return minutes(m, k)
+		}
+		if n := conf.Node(); n[k] != "" {
+			return minutes(n, k)
+		}
+		return def
+	}
+	now := time.Now()
+	f := Facts{Now: now, Lanes: s.Lanes, Activity: activity(a.P, s.Lanes), StallMin: setting("STALL_MIN", 30), WarnMin: setting("JOB_WARN_MIN", 0),
+		Update: selfupdate.Cached(a.Version)}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.st.HubOK {
+		a.hubDown = time.Time{}
+	} else if a.hubDown.IsZero() {
+		a.hubDown = now
+	}
+	f.HubDown, f.HubErr = a.hubDown, a.st.HubErr
+	if !a.proto.at.IsZero() && !a.proto.ok {
+		f.Protocol = a.proto.msg
+	}
+	if a.diskSeen && !a.st.DiskOK {
+		f.DiskHeld = a.st.Disk.Why()
+	}
+	f.Missing, f.Starts = a.missing, a.starts
+	a.st.Alerts = Evaluate(f, a.st.Alerts)
+	a.Notify.notify(a.P.Name, a.st.Alerts, conf.Node()["NOTIFY"] == "on", a.Logf)
+	return append([]Alert(nil), a.st.Alerts...)
 }
 
 // exeChanged: the binary on disk is no longer the one running (an update or a reinstall).
@@ -262,6 +308,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	slots = max(slots, 1)
 	exe, _ := os.Executable()
 	a.st = State{Project: p.Name, Node: a.name, Version: a.Version, PID: os.Getpid(), Started: time.Now(), Hub: a.Hub.Name()}
+	if old, err := ReadState(p); err == nil && time.Since(old.Updated) < 10*time.Minute {
+		a.st.Alerts = old.Alerts // still the same conditions, most likely: keep when they began, and what was notified
+	}
+	a.starts = countStarts(p, time.Now())
 	for i := range slots {
 		a.st.Lanes = append(a.st.Lanes, Lane{Slot: i + 1, Percent: -1})
 	}
@@ -274,6 +324,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.Logf("this node is missing what %s needs, so not starting: %s (sat %s check shows the commands)", p.Name, plan.Lines(s), p.Name)
 		a.mu.Lock()
 		a.st.Note = "missing requirements: sat " + p.Name + " check"
+		a.missing = "missing requirements, so the service won't start: sat " + p.Name + " check"
 		a.mu.Unlock()
 		a.writeState(false)
 		return nil
@@ -442,7 +493,7 @@ func (a *Agent) roomy(i int) bool {
 func (a *Agent) disk() Disk {
 	d := Measure(a.P, false)
 	a.mu.Lock()
-	a.st.Disk, a.st.DiskOK = d, d.OK(1)
+	a.st.Disk, a.st.DiskOK, a.diskSeen = d, d.OK(1), true
 	a.mu.Unlock()
 	return d
 }
