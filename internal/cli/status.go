@@ -31,6 +31,8 @@ type statusInfo struct {
 	NotClaiming          bool // reachable, but its protocol is not ours
 	Live                 bool // the agent's state is current
 	Note                 string
+	Restart              string // the agent re-executed and adopted running jobs, within the hour
+	RestartAt            time.Time
 	Lanes                []agent.Lane
 	Claims               [][2]string // lane, job: from the claim files when the agent isn't live
 	Missing              int         // requirements missing (only looked at when not active)
@@ -79,6 +81,9 @@ func gather(t *ui.T, p *conf.Project) *statusInfo {
 	s.Alerts = alertsOf(p, s.State)
 	if st, err := agent.ReadState(p); err == nil && st.Live() {
 		s.Live, s.Note, s.Lanes = true, st.Note, st.Lanes
+		if st.Restart != "" && time.Since(st.RestartAt) < time.Hour {
+			s.Restart, s.RestartAt = st.Restart, st.RestartAt
+		}
 	} else {
 		fs, _ := filepath.Glob(filepath.Join(p.State, "slot*.claim"))
 		for _, f := range fs {
@@ -119,6 +124,9 @@ func (s *statusInfo) renderPlain(t *ui.T, now time.Time) {
 	if s.Live {
 		if s.Note != "" {
 			t.Printf("agent: %s\n", s.Note)
+		}
+		if s.Restart != "" {
+			t.Printf("agent: %s, %s\n", s.Restart, ago(s.RestartAt))
 		}
 		for _, l := range s.Lanes {
 			if l.ID == "" {
@@ -190,6 +198,9 @@ func (s *statusInfo) renderStyled(t *ui.T, now time.Time) {
 		rows = append(rows, []string{t.Muted("hub"), s.Hub + "  " + t.Warn("reachable, but not claiming: "+s.HubErr.Error())})
 	default:
 		rows = append(rows, []string{t.Muted("hub"), s.Hub + "  " + t.Bad("unreachable") + t.Muted(" ("+s.HubErr.Error()+")")})
+	}
+	if s.Restart != "" {
+		rows = append(rows, []string{t.Muted("agent"), s.Restart + t.Muted(", "+ago(s.RestartAt))})
 	}
 	if s.Note != "" {
 		rows = append(rows, []string{t.Muted("agent"), t.Warn(s.Note)})

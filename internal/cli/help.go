@@ -39,7 +39,7 @@ var helps = []cmdHelp{
 	{name: "setup", args: "[--install] HUB_IP PROJECT [HUB_USER]", short: "make this machine a node for PROJECT", node: true,
 		long: "Safe to rerun. It installs no software unless given --install, and then only\nafter showing every step and asking. Nothing starts until sat PROJECT start."},
 	{name: "self-update", args: "[--yes]", short: "install the newest release (docs/security.md)", node: true,
-		long: "Shows the release notes and asks; checks the download's checksum and its build\nattestation; drains running services, swaps the binary and restarts them."},
+		long: "Shows the release notes and asks; checks the download's checksum and its build\nattestation; then swaps the binary. Running services re-execute on it at once and\nadopt their running jobs, which keep running."},
 	{name: "uninstall", args: "[--yes] [PROJECT]", short: "remove a project, or with the last one everything", node: true,
 		long: "Lists exactly what it will remove and asks. It never removes packages."},
 	{name: "migrate", args: "[--yes]", short: "move a node set up by the bash scripts (~/sat) to ~/.sat", node: true},

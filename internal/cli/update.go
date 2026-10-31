@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/RashKash103/satellite/internal/conf"
 	"github.com/RashKash103/satellite/internal/selfupdate"
@@ -104,7 +103,7 @@ func selfUpdate(a []string) int {
 	run := running()
 	q := "Install it?"
 	if len(run) > 0 {
-		q = fmt.Sprintf("Install it? Running services (%v) are drained first, then restarted.", run)
+		q = fmt.Sprintf("Install it? Running services (%v) switch to it at once; their running jobs keep running.", run)
 	}
 	if !yes && !ask(q) {
 		return 1
@@ -122,32 +121,21 @@ func selfUpdate(a []string) int {
 		return fail("not updated: " + err.Error())
 	}
 	defer os.Remove(path)
-	for _, n := range run {
-		os.WriteFile(filepath.Join(conf.Dir(n), "state", "drain"), nil, 0o644)
-		t.Println(t.Mark(ui.MarkWarn) + "draining " + t.Bold(n) + ": waiting for its running jobs to finish")
-	}
-	for i := 0; len(running()) > 0; i++ {
-		if i > 0 && i%30 == 0 {
-			t.Println(t.Muted(fmt.Sprintf("still draining: %v", running())))
-		}
-		time.Sleep(2 * time.Second)
-	}
 	if err := selfupdate.Swap(path, conf.Exe()); err != nil {
 		return fail("not updated: " + err.Error())
 	}
 	exec.Command(conf.Exe(), "_unit").Run()
 	t.Done("sat is now %s", t.Bold(rel.Tag))
-	for _, n := range run {
-		c := exec.Command(conf.Exe(), n, "start")
-		c.Stdout, c.Stderr = os.Stdout, os.Stderr
-		c.Run()
+	if len(run) > 0 {
+		t.Println(t.Mark(ui.MarkInfo) + fmt.Sprintf("running services (%s) restart on it within seconds and adopt their running jobs %s",
+			strings.Join(run, " "), t.Muted("(sat status shows it)")))
 	}
 	return 0
 }
 
-// autoUpdate (AUTO_UPDATE=on in ~/.sat/config): from the agent, between jobs. Without it the
-// agent only notes, at most daily, that a release exists. One agent updates; the others see the
-// binary change and restart between jobs too.
+// autoUpdate (AUTO_UPDATE=on in ~/.sat/config): from the agent. Without it the agent only notes, at
+// most daily, that a release exists. One agent updates; it and the others see the binary change,
+// re-execute and adopt their running jobs.
 func autoUpdate(ctx context.Context, logf func(string, ...any)) bool {
 	tag, err := selfupdate.Available(ctx, Version, false)
 	if err != nil || tag == "" || conf.Node()["AUTO_UPDATE"] != "on" {
@@ -179,6 +167,6 @@ func autoUpdate(ctx context.Context, logf func(string, ...any)) bool {
 		return false
 	}
 	exec.Command(conf.Exe(), "_unit").Run()
-	logf("updated to %s: restarting once the running jobs finish", tag)
+	logf("updated to %s", tag)
 	return true
 }

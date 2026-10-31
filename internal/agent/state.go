@@ -31,7 +31,9 @@ type State struct {
 	Draining    bool      `json:"draining"`
 	Disk        Disk      `json:"disk"`
 	DiskOK      bool      `json:"disk_ok"`
-	Note        string    `json:"note,omitempty"` // why the agent isn't claiming, when it isn't
+	Note        string    `json:"note,omitempty"`    // why the agent isn't claiming, when it isn't
+	Restart     string    `json:"restart,omitempty"` // "updated from A to B, adopted N running jobs"
+	RestartAt   time.Time `json:"restart_at,omitzero"`
 	Lanes       []Lane    `json:"lanes"`
 	Alerts      []Alert   `json:"alerts,omitempty"`
 }

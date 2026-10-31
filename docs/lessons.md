@@ -29,6 +29,14 @@ script as it runs it: replace scripts by writing a new file and renaming it over
 by editing in place. The running process keeps the old version until it restarts, so either restart
 it between items or let it re-exec itself when its file changes.
 
+**A daemon that re-execs can keep its children running, if it planned for it.** `exec` keeps the
+PID, so the children stay its children and can still be waited for, but only what was written to
+disk survives: what they were, and where their output goes. Give children files, not pipes (a pipe
+to the old process is gone, and the child dies writing to it), record each one's PID and start
+time (a PID alone may be reused), and have each one write its own exit status to a file, for the
+moment no one is waiting. Sat's agent does this to update without stopping jobs that run for
+hours.
+
 ## Claim filters must agree with the hub
 
 **Compute a filter exactly as the hub does, at the same point.** The hub refused branches that

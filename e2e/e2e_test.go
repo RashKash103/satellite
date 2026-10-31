@@ -229,7 +229,7 @@ type node struct {
 
 const fakeSystemctl = `#!/bin/sh
 echo "$*" >> "$SYSTEMCTL_LOG"
-case "$2" in is-active) echo inactive; exit 3 ;; is-enabled) echo "${FAKE_ENABLED:-disabled}"; [ -n "$FAKE_ENABLED" ] ;; esac
+case "$2" in is-active) [ -n "$FAKE_ACTIVE" ] && { echo active; exit 0; }; echo inactive; exit 3 ;; is-enabled) echo "${FAKE_ENABLED:-disabled}"; [ -n "$FAKE_ENABLED" ] ;; esac
 exit 0
 `
 
@@ -437,11 +437,16 @@ func TestLostLeaseKillsTheJob(t *testing.T) {
 		s := read(n.state("agent.json"))
 		return strings.Contains(s, `"percent": 40`) && strings.Contains(s, `"progress": "halfway there"`)
 	})
-	var pid int
+	var pid, pg int
 	fmt.Sscan(read(n.state("pid-long")), &pid)
+	st := read(fmt.Sprintf("/proc/%d/stat", pid))
+	fmt.Sscan(st[strings.LastIndexByte(st, ')')+2:], new(string), new(int), &pg) // state ppid pgrp
+	if pg == 0 || syscall.Kill(-pg, 0) != nil {
+		t.Fatalf("the job's process group: %q", st)
+	}
 	os.Remove(filepath.Join(h.conf, "leases", "hello", "long")) // as if reaped and taken by another node
 	waitFor(t, "the lease loss", 20*time.Second, func() bool { return strings.Contains(a.out.String(), "lease on long lost: stopping it") })
-	waitFor(t, "the job's process group to go", 10*time.Second, func() bool { return syscall.Kill(-pid, 0) != nil })
+	waitFor(t, "the job's process group to go", 10*time.Second, func() bool { return syscall.Kill(-pg, 0) != nil && syscall.Kill(pid, 0) != nil })
 	waitFor(t, "the lane to be free", 10*time.Second, func() bool { return !exists(n.state("slot1.claim")) })
 }
 

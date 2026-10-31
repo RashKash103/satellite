@@ -234,6 +234,9 @@ func (m *model) detailRows(t styles, w int) []string {
 	default:
 		r = append(r, kv("", t.ok.Render("reachable")+t.muted.Render(" · protocol "+st.Protocol+" · "+ui.Ago(st.LastContact, now))))
 	}
+	if st.Live() && st.Restart != "" && now.Sub(st.RestartAt) < time.Hour {
+		r = append(r, kv("agent", st.Restart+t.muted.Render(" · "+ui.Ago(st.RestartAt, now))))
+	}
 	d := p.disk
 	ds := fmt.Sprintf("%d GB free", d.Avail>>30) + t.muted.Render(fmt.Sprintf(" · keeps %d GB", d.Need>>30))
 	if !d.OK(1) {

@@ -37,6 +37,11 @@ a fake `systemctl` that only records what it is asked. It checks:
 - `MAX_PER_NODE`: a node with two lanes holding one job at a time, without errors, and
   `sat-hub PROJECT nodes` showing it;
 - `sat migrate` from the bash layout, with the bundle's `sat/moved`;
+- a binary replaced while a long job runs: the agent re-executes at once (the same PID), adopts the
+  job, keeps renewing its lease and reports it once, while its idle lane takes another job;
+  `sat self-update` against a fake release server doing the same without waiting for the job; and
+  a job that ended while no agent watched it: handed back without an exit status, reported with
+  one;
 - the hello example's views against the running agent: listed, run once (asking the hub through
   `sat-call`), and a lane's stream followed as the job goes and stopped by ctrl+c;
 - an alert raised by the agent (the disk floor), listed by `alerts` and `status`, notified once

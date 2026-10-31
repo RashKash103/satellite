@@ -180,7 +180,7 @@ func activity(p *conf.Project, lanes []Lane) map[int]time.Time {
 		fs, _ := filepath.Glob(filepath.Join(p.State, fmt.Sprintf("slot%d.*", l.Slot)))
 		for _, f := range fs {
 			b := filepath.Base(f)
-			if strings.HasSuffix(b, ".claim") || strings.HasSuffix(b, ".result") {
+			if strings.HasSuffix(b, ".claim") || strings.HasSuffix(b, ".result") || strings.HasSuffix(b, ".job") || strings.Contains(b, ".exit") {
 				continue
 			}
 			if fi, err := os.Stat(f); err == nil && fi.ModTime().After(m[l.Slot]) {

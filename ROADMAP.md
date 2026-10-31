@@ -18,7 +18,8 @@ the legacy reference.
 - **Updates** from this repository's GitHub releases, not from hubs. The hub states its protocol
   (`sat-hub --protocol`); a node that doesn't speak it stops claiming from that hub and says why.
   By default a node only reports that an update exists; `sat self-update` shows the notes, asks,
-  verifies the checksum and build attestation, drains, swaps and restarts; `AUTO_UPDATE=on` and
+  verifies the checksum and build attestation and swaps; running agents re-execute at once and
+  adopt their running jobs; `AUTO_UPDATE=on` and
   `PIN` as documented. A release workflow builds, checksums and attests tagged versions.
 - **`sat uninstall [PROJECT]`** lists what it will remove and asks, has the hub forget the node's key
   (`sat-hub --forget`), and never removes packages: the commands `sat install` ran are listed.

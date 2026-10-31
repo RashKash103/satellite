@@ -280,8 +280,11 @@ func runAgent(name string) int {
 	err = a.Run(ctx)
 	c.Close()
 	if errors.Is(err, agent.ErrRestart) {
+		// The same PID: the service stays up, and the running jobs stay this process's children
+		// for the new binary to adopt.
 		e := conf.Exe()
-		syscall.Exec(e, []string{e, "agent", name}, os.Environ())
+		err := syscall.Exec(e, []string{e, "agent", name}, os.Environ())
+		fmt.Fprintf(os.Stdout, "could not run the new binary %s: %v\n", e, err)
 		return 1
 	}
 	if err != nil {

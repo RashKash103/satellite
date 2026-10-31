@@ -259,10 +259,26 @@ node only notes that one exists (it asks at most once a day), in `sat status` an
 `sat self-update` shows the release notes and asks. It then downloads the binary for this machine,
 checks it against the release's `checksums.txt`, and checks its build attestation with
 `gh attestation verify` when `gh` is installed and logged in (it says so when it couldn't). Only
-then does it drain the running services, swap the binary in, and restart them.
+then does it swap the binary in, at once: it waits for no job.
+
+**Running jobs keep running.** An agent whose binary is replaced (by `self-update`, `AUTO_UPDATE`,
+or by hand) re-executes itself within seconds. The process stays the same (its PID, so the
+service and its control group stay up), and its jobs, each in its own process group, keep running.
+The new agent adopts them from the lanes' state files (`state/slotN.job`: the claim, the job's PID,
+process group and start time, its result and progress files): it checks each process is still
+that job, keeps renewing its lease, waits for it, and reports it from its exit status as always
+(each job runs under a small wrapper that also writes that status to `state/slotN.exit`). A job
+that ended with no status recorded is handed back. Idle lanes keep claiming throughout, and
+`sat status` and the live view say "updated from A to B, adopted N running jobs" for the next hour.
+An agent from before this behaviour still finishes its jobs first, that one time.
+
+This covers re-executing, not crashes: when the agent itself dies, systemd stops the whole control
+group (`KillMode=control-group`), jobs included, and the unit's stop hands them back; the restarted
+agent finds nothing to adopt. `sat stop` and `sat drain` are as before: stop hands the running jobs
+back now, drain lets them finish.
 
 With `AUTO_UPDATE=on` in `~/.sat/config`, the agents do the same unattended: one downloads and
-checks the release, and each restarts once its running jobs finish. `PIN=vX.Y.Z` holds the node on
+checks the release and swaps it in, and each re-executes and adopts its jobs. `PIN=vX.Y.Z` holds the node on
 one version. The hub states the protocol it speaks; a node that doesn't speak it claims nothing
 from that hub, and says why, until one of them is updated.
 

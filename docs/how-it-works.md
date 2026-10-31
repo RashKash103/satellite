@@ -104,7 +104,9 @@ git host, and so on.
 ~/.sat/projects/PROJECT/env         optional, sourced before each job (e.g. PATH)
 ~/.sat/projects/PROJECT/bundle/     the project's files from the hub
 ~/.sat/projects/PROJECT/state/      agent.json (what the live view reads), agent.log, lane claims,
-                                    logs and progress, the drain flag, the project's own state
+                                    running jobs (slotN.job, slotN.exit: for an agent to adopt
+                                    after an update), logs and progress, the drain flag, the
+                                    project's own state
 ~/.config/systemd/user/sat@.service the unit, one instance per project
 ~/.ssh/sat_ed25519, ~/.ssh/config   the node key and the sat-hub-IP alias
 ```
