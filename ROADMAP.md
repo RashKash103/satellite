@@ -9,7 +9,7 @@ the legacy reference.
 - **One static binary** for the node (`sat`): nothing to install but the file.
 - **A live view:** `sat` with no arguments shows each project, its service, the hub, disk room and
   each lane: its job, elapsed time, last renewal, the job's own progress (`$SAT_PROGRESS`, the one
-  addition to the bundle contract) and its log, with start, drain and stop on a key.
+  addition to the bundle contract) and its log, in panes; every command can be run from it.
 - **One SSH connection** held open per hub instead of one per call (the system ssh remains an
   option, `TRANSPORT=exec`).
 - **Layout:** everything under `~/.sat`, projects kept apart from the tool; `sat status` shows each

@@ -50,7 +50,7 @@ func Main(version string, args []string) int {
 		if !term.IsTerminal(int(os.Stdout.Fd())) || !term.IsTerminal(int(os.Stdin.Fd())) {
 			return statusAll()
 		}
-		return tui.Run(Version, exe())
+		return tui.Run(Version, exe(), tui.Options{Legacy: bashLayout})
 	}
 	if h := helpFor(a[0]); h != nil && h.node && wantsHelp(a[0], a[1:]) {
 		printHelp(ui.Out(), h)

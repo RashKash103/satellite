@@ -85,11 +85,23 @@ view shows them all.
 
 ## 4. The `sat` command
 
-`sat` on its own is the **live view**: each project's service, the hub (reachable, its protocol,
-last contact), disk room, and each lane's job, how long it has run, its last renewal and its own
-progress, with the selected lane's log below. Keys: `↑`/`↓` pick a lane, `s` start, `d` drain,
-`x` stop (asks first), `l` hide or show the log, `q` quit. It reads what the agents write and opens
-no connection of its own.
+`sat` on its own is the **live view**, in panes: on the left the projects (`1`), the selected
+project's lanes (`2`: each lane's job, how long it has run and its own progress) and its details
+(`3`: service, autostart, the hub and its protocol, last contact, disk room); on the right (`4`)
+the selected lane's log, the service log or the output of the last action (`[` and `]` switch).
+`tab` and the numbers move between panes, `j`/`k` or the arrows within one, `enter` goes in, `/`
+filters the pane (projects, lanes or log lines), the mouse clicks and scrolls, and `?` lists every
+key. It follows the terminal's size and background and reads what the agents write; it opens no
+connection of its own.
+
+Everything the command line does can be done from it, and it runs the same `sat` commands to do
+it: `s` start, `d` drain, `x` stop (asks first), `A` autostart, `c` check, `t` selftest, `u` update,
+`e` and `E` open the project's `env` and `config` in `$VISUAL` or `$EDITOR` (else nano, else vi),
+`v` sets or unsets an env key, `a` adds a project (`sat setup`, as a form). Those stream their
+output into the right pane. `i` install, `U` uninstall the project, `ctrl+u` uninstall everything,
+`S` self-update and `M` migrate (offered when a bash node is found) hand the terminal to `sat`
+itself, which shows exactly what it will do and asks before anything runs, as on the command line;
+`enter` then brings the live view back.
 
 `sat [PROJECT] COMMAND`. PROJECT can be left out when the node has only one (`sat status` then shows
 them all).
