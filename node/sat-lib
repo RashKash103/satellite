@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # sat-lib: sourced by sat-setup and sat. What a node is missing, and installing it only when asked.
 #
 # Requirements are plan lines, printed by sat_needs (the engine's own) and by the project's
@@ -11,7 +12,7 @@
 
 # sat_needs: what Satellite itself needs on a node.
 sat_needs() {
-  local t pk miss=()
+  local t miss=()
   for t in ssh:openssh-client tar:tar gzip:gzip setsid:util-linux diff:diffutils; do
     command -v "${t%%:*}" >/dev/null || miss+=("${t#*:}")
   done
