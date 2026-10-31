@@ -98,6 +98,10 @@ These apply to Claude Code; other agents have their own versions of the same iss
   the clone (`sat migrate`) means trusting the new path again.
 - **The node's usage limit is the node's own.** When the node's agent hits its quota, don't hand
   tasks back to churn through the queue: pause only that node with `sat/ready` until the reset time.
+- **Shared state that travels through its own sync channel must be published first.** An issue
+  tracker kept its board in a git branch that each machine syncs on demand. An issue created on the
+  hub for a node's task wasn't there for the node's agent to close, because the hub hadn't synced.
+  Publish such state before a node needs it, and pull before relying on what nodes changed.
 - **Tell the agent where it is.** Paths in shared instructions point at the hub. Say in the prompt
   which paths differ on the node, which tools aren't installed there, and how many build jobs to use.
 
