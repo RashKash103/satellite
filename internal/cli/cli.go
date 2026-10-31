@@ -1,0 +1,182 @@
+// Package cli is the sat command. As sat-call (argv[0]) it is what jobs call the hub with.
+package cli
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+
+	"github.com/RashKash103/satellite/internal/conf"
+	"github.com/RashKash103/satellite/internal/plan"
+	"github.com/RashKash103/satellite/internal/tui"
+	"golang.org/x/term"
+)
+
+const usage = `sat                          the live view: lanes, jobs, progress, logs
+sat [PROJECT] COMMAND        PROJECT may be left out when only one is set up
+  start            take jobs from the hub now
+  stop             stop now; jobs in progress go straight back to the hub
+  drain            take no new jobs; stop once the running ones finish
+  status           service state, hub, jobs in progress, disk use, recent log lines
+  logs             follow the service log
+  autostart on|off start at boot (off by default)
+  check            what this node is missing, and the commands that would install it
+  install          show those steps (apt ones simulated, never removing), ask, run them
+  selftest         the project's own check of this node (its sat/selftest)
+  update           refresh the bundle from the hub, check, rerun the project's sat/setup
+sat setup [--install] HUB_IP PROJECT [HUB_USER]   make this machine a node for PROJECT
+sat self-update [--yes]      install the newest release (docs/security.md)
+sat uninstall [--yes] [PROJECT]   remove a project, or with the last one everything
+sat migrate [--yes]          move a node set up by the bash scripts (~/sat) to ~/.sat
+sat version
+`
+
+var Version = "dev"
+
+func Main(version string, args []string) int {
+	Version = version
+	if filepath.Base(args[0]) == "sat-call" {
+		return satCall(args[1:])
+	}
+	a := args[1:]
+	if len(a) == 0 {
+		if !term.IsTerminal(int(os.Stdout.Fd())) || !term.IsTerminal(int(os.Stdin.Fd())) {
+			return statusAll()
+		}
+		return tui.Run(Version, exe())
+	}
+	switch a[0] {
+	case "setup":
+		return setup(a[1:])
+	case "migrate":
+		return migrate(a[1:])
+	case "self-update":
+		return selfUpdate(a[1:])
+	case "uninstall":
+		return uninstall(a[1:])
+	case "agent":
+		if len(a) != 2 {
+			return fail("usage: sat agent PROJECT")
+		}
+		return runAgent(a[1])
+	case "_unit":
+		return installUnit()
+	case "version", "--version":
+		fmt.Println("sat", Version)
+		return 0
+	case "help", "-h", "--help":
+		fmt.Print(usage)
+		return 0
+	}
+	ps := conf.List()
+	var name string
+	switch {
+	case slices.Contains(ps, a[0]):
+		name, a = a[0], a[1:]
+	case len(a) > 1 && a[1] == "_release" && conf.NameOK(a[0]):
+		name, a = a[0], a[1:] // a unit stopping for a project that is gone: nothing to do
+	case len(ps) == 1:
+		name = ps[0]
+	case a[0] == "status":
+		return statusAll()
+	case len(ps) == 0:
+		return fail("no projects on this node: sat setup HUB_IP PROJECT (docs/node.md)")
+	default:
+		return fail("which project? " + strings.Join(ps, " "))
+	}
+	if len(a) == 0 {
+		fmt.Print(usage)
+		return 2
+	}
+	return project(name, a[0], a[1:])
+}
+
+func fail(s string) int {
+	fmt.Fprintln(os.Stderr, s)
+	return 2
+}
+
+func exe() string {
+	e, err := os.Executable()
+	if err != nil {
+		return conf.Exe()
+	}
+	return e
+}
+
+func tty() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+
+// ask once on a terminal; never yes without one.
+func ask(q string) bool {
+	if !tty() {
+		fmt.Println("Not a terminal: nothing was done. Run this from a terminal to confirm, or pass --yes.")
+		return false
+	}
+	fmt.Printf("%s [y/N] ", q)
+	a, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	a = strings.TrimSpace(a)
+	return a == "y" || a == "Y"
+}
+
+func flag(a []string, names ...string) (bool, []string) {
+	var rest []string
+	found := false
+	for _, x := range a {
+		if slices.Contains(names, x) {
+			found = true
+		} else {
+			rest = append(rest, x)
+		}
+	}
+	return found, rest
+}
+
+// sc runs systemctl --user (SAT_SYSTEMCTL in tests).
+func sc(args ...string) *exec.Cmd {
+	return exec.Command(plan.Systemctl(), append([]string{"--user"}, args...)...)
+}
+
+func scOut(args ...string) string {
+	out, _ := sc(args...).Output()
+	return strings.TrimSpace(string(out))
+}
+
+func active(unit string) bool { return sc("is-active", "-q", unit).Run() == nil }
+
+func journalctl() string {
+	if j := os.Getenv("SAT_JOURNALCTL"); j != "" {
+		return j
+	}
+	return "journalctl"
+}
+
+func run(cmd *exec.Cmd) error {
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd.Run()
+}
+
+func human(n int64) string {
+	f := float64(n)
+	for _, u := range []string{"B", "KB", "MB", "GB", "TB"} {
+		if f < 1024 || u == "TB" {
+			if u == "B" {
+				return fmt.Sprintf("%d B", n)
+			}
+			return fmt.Sprintf("%.1f %s", f, u)
+		}
+		f /= 1024
+	}
+	return ""
+}
+
+// tilde shortens a path under the home directory.
+func tilde(p string) string {
+	if r, err := filepath.Rel(conf.Home(), p); err == nil && !strings.HasPrefix(r, "..") {
+		return "~/" + r
+	}
+	return p
+}
