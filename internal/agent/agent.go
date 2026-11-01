@@ -761,8 +761,10 @@ func (a *Agent) done(i int) {
 }
 
 // Release hands back whatever the project's lanes hold (sat@.service's ExecStop: before systemd
-// stops the processes).
+// stops the processes). A drain ends with the stop: a stopped project is not draining, and a
+// shutdown mid-drain must not leave the next start draining.
 func Release(ctx context.Context, p *conf.Project, c hub.Caller, w io.Writer) {
+	os.Remove(filepath.Join(p.State, "drain"))
 	fs, _ := filepath.Glob(filepath.Join(p.State, "slot*.claim"))
 	for _, f := range fs {
 		b, _ := os.ReadFile(f)

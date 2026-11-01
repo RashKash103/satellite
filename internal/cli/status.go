@@ -64,7 +64,7 @@ func gather(t *ui.T, p *conf.Project) *statusInfo {
 		s.State = "unknown"
 	}
 	_, err := os.Stat(filepath.Join(p.State, "drain"))
-	s.Drain = err == nil
+	s.Drain = err == nil && s.State == "active" // a stopped project is not draining
 	c := hub.For(p)
 	s.Hub = c.Name()
 	spin(t, "asking the hub "+s.Hub, func() {

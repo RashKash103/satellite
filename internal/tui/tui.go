@@ -186,7 +186,7 @@ func (m *model) refresh() {
 		x.st, _ = agent.ReadState(p)
 		x.active, x.enabled = sysctl("is-active", p.Unit()), sysctl("is-enabled", p.Unit())
 		_, err = os.Stat(filepath.Join(p.State, "drain"))
-		x.drain = err == nil
+		x.drain = err == nil && x.active == "active" // a stopped project is not draining
 		fmt.Sscan(p.Get("SLOTS", "1"), &x.slots)
 		x.slots = max(x.slots, 1)
 		if x.st.Live() {

@@ -23,14 +23,15 @@ start) sat_check "$SAT_BUNDLE" "$P" >/dev/null || { sat_check "$SAT_BUNDLE" "$P"
   rm -f "$ST/drain"; systemctl --user start "$U" && echo "started $P" ;;
 check) sat_check "$SAT_BUNDLE" "$P" ;;
 install) plan=$(sat_plan "$SAT_BUNDLE"); [ -z "$plan" ] && { echo "nothing missing"; exit 0; }; sat_install "$plan" ;;
-stop) systemctl --user stop "$U" && echo "stopped $P; items in progress were handed back" ;;
+stop) systemctl --user stop "$U" && rm -f "$ST/drain" && echo "stopped $P; items in progress were handed back" ;;
 drain)
   systemctl --user is-active -q "$U" || { echo "not running"; exit 0; }
   touch "$ST/drain"; echo "draining: no new items; stops after: $(cat "$ST"/slot*.claim 2>/dev/null | tr '\n' ' ')" ;;
-_release)   # ExecStop: hand back whatever is in progress before systemd stops the processes
+_release)   # ExecStop: hand back whatever is in progress before systemd stops the processes; a drain ends
+  rm -f "$ST/drain"
   for f in "$ST"/slot*.claim; do [ -s "$f" ] && sat-call release "$NAME" "$(cat "$f")"; rm -f "$f"; done; exit 0 ;;
 status)
-  echo "$P: $(systemctl --user is-active "$U") (autostart: $(systemctl --user is-enabled "$U" 2>/dev/null))$([ -e "$ST/drain" ] && echo ', draining')"
+  echo "$P: $(systemctl --user is-active "$U") (autostart: $(systemctl --user is-enabled "$U" 2>/dev/null))$([ -e "$ST/drain" ] && systemctl --user is-active -q "$U" && echo ', draining')"
   echo "hub $HUB: $(sat-call status >/dev/null 2>&1 && echo reachable || echo UNREACHABLE)"
   echo "disk: $(sat_disk_why size)$(sat_disk_ok || echo '  (not taking work: low on room)')"
   for f in "$ST"/slot*.claim; do [ -s "$f" ] && echo "lane $(basename "$f" .claim | tr -dc 0-9): $(cat "$f")"; done

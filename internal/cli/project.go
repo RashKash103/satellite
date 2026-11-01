@@ -55,6 +55,7 @@ func project(name, cmd string, a []string) int {
 		if err := sc("stop", u).Run(); err != nil {
 			return fail("could not stop " + u + ": " + err.Error())
 		}
+		os.Remove(filepath.Join(st, "drain")) // stopped is not draining (the ExecStop clears it too)
 		t.Done("stopped %s; jobs in progress were handed back", t.Bold(p.Name))
 	case "drain":
 		if !active(u) {
