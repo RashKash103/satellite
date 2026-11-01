@@ -56,6 +56,18 @@ func key(m *model, k string) tea.Cmd {
 		msg = tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
 	case "ctrl+u":
 		msg = tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}
+	case "ctrl+c":
+		msg = tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+	case "left":
+		msg = tea.KeyPressMsg{Code: tea.KeyLeft}
+	case "right":
+		msg = tea.KeyPressMsg{Code: tea.KeyRight}
+	case "up":
+		msg = tea.KeyPressMsg{Code: tea.KeyUp}
+	case "down":
+		msg = tea.KeyPressMsg{Code: tea.KeyDown}
+	case "backspace":
+		msg = tea.KeyPressMsg{Code: tea.KeyBackspace}
 	default:
 		r := []rune(k)[0]
 		msg = tea.KeyPressMsg{Code: r, Text: k}
@@ -188,23 +200,64 @@ func TestHelpOverlay(t *testing.T) {
 		t.Error("ran under the help")
 	}
 	key(m, "esc")
-	if m.help {
+	if m.modal != nil {
 		t.Error("esc did not close it")
+	}
+	for _, k := range []string{"?", "q"} {
+		key(m, "?")
+		if c := key(m, k); m.modal != nil || c != nil {
+			t.Errorf("%s did not just close the help", k)
+		}
 	}
 }
 
 func TestStopAsks(t *testing.T) {
 	m := node(t)
 	key(m, "x")
-	if !strings.Contains(screen(m), "Stop hello now?") || m.last.mode != "" {
-		t.Fatal("stop did not ask")
+	if v := screen(m); !strings.Contains(v, "Stop hello now?") || !strings.Contains(v, "[ Stop ]") || !strings.Contains(v, "[ Cancel ]") || m.last.mode != "" {
+		t.Fatalf("stop did not ask:\n%s", v)
 	}
-	if c := key(m, "n"); c != nil || m.confirm != nil || m.last.mode != "" {
+	if c := key(m, "n"); c != nil || m.modal != nil || m.last.mode != "" {
 		t.Fatal("stopped without a yes")
 	}
+	// It starts on Cancel: enter alone, or esc, does nothing.
+	for _, k := range []string{"enter", "esc"} {
+		key(m, "x")
+		if c := key(m, k); c != nil || m.modal != nil || m.last.mode != "" || m.msg != "nothing was done" {
+			t.Fatalf("%s stopped it", k)
+		}
+	}
+	// Other keys do nothing while it asks.
 	key(m, "x")
-	if c := key(m, "y"); c == nil || !slices.Equal(m.last.args, []string{"hello", "stop"}) {
+	key(m, "s")
+	key(m, "q")
+	if m.modal == nil || m.last.mode != "" {
+		t.Fatal("a key went past the dialog")
+	}
+	key(m, "esc")
+	key(m, "x")
+	if c := key(m, "y"); c == nil || !slices.Equal(m.last.args, []string{"hello", "stop"}) || m.modal != nil {
 		t.Fatalf("y did not stop: %v", m.last)
+	}
+	// ← then enter: the Stop button.
+	m = node(t)
+	key(m, "x")
+	key(m, "left")
+	if c := key(m, "enter"); c == nil || !slices.Equal(m.last.args, []string{"hello", "stop"}) {
+		t.Fatalf("enter on Stop: %v", m.last)
+	}
+	// A click on Stop.
+	m = node(t)
+	key(m, "x")
+	screen(m)
+	for _, h := range m.modal.hits {
+		if h.item == len(m.modal.fields) { // the first button
+			m.Update(tea.MouseClickMsg{X: h.r.x + 1, Y: h.r.y})
+			break
+		}
+	}
+	if m.modal != nil || !slices.Equal(m.last.args, []string{"hello", "stop"}) {
+		t.Fatalf("a click on Stop: %v", m.last)
 	}
 }
 
@@ -246,8 +299,18 @@ func TestDispatch(t *testing.T) {
 	// env set through the input.
 	m = node(t)
 	key(m, "v")
+	if m.modal == nil || m.modal.kind != "env" {
+		t.Fatal("v: no env dialog")
+	}
+	key(m, "enter")
+	if key(m, "enter"); m.modal == nil || m.modal.err == "" || m.last.mode != "" {
+		t.Fatal("an empty env line went through")
+	}
+	m.modal.focus = 0
+	m.modal.focusCmd()
 	typ(m, "FOO=a b")
-	if key(m, "enter"); !slices.Equal(m.last.args, []string{"hello", "env", "FOO=a b"}) {
+	key(m, "enter")
+	if key(m, "enter"); !slices.Equal(m.last.args, []string{"hello", "env", "FOO=a b"}) || m.modal != nil {
 		t.Error(m.last)
 	}
 }
@@ -331,23 +394,27 @@ func TestSetupForm(t *testing.T) {
 	if !strings.Contains(screen(m), "Add a project") {
 		t.Fatal("no form")
 	}
-	key(m, "enter")
-	key(m, "enter")
-	key(m, "enter")
+	for range 4 { // enter goes from field to field, then to Set up
+		key(m, "enter")
+	}
 	key(m, "enter") // submit with nothing filled in
-	if m.form == nil || !strings.Contains(screen(m), "the hub's IP address is needed") {
+	if m.modal == nil || !strings.Contains(screen(m), "the hub's IP address is needed") {
 		t.Fatal("submitted an empty form")
 	}
-	m.form.at = 0
-	m.form.focus()
+	m.modal.focus = 0
+	m.modal.focusCmd()
 	typ(m, "192.0.2.7")
+	if m.modal.err != "" {
+		t.Error("typing did not clear the error")
+	}
 	key(m, "tab")
 	typ(m, "newproj")
 	key(m, "tab")
 	key(m, "tab")
 	key(m, "space")
+	key(m, "tab")
 	key(m, "enter")
-	if m.form != nil || m.last.mode != "terminal" || !slices.Equal(m.last.args, []string{"setup", "--install", "192.0.2.7", "newproj"}) {
+	if m.modal != nil || m.last.mode != "terminal" || !slices.Equal(m.last.args, []string{"setup", "--install", "192.0.2.7", "newproj"}) {
 		t.Fatalf("%v", m.last)
 	}
 	m = node(t)
@@ -358,13 +425,14 @@ func TestSetupForm(t *testing.T) {
 	key(m, "tab")
 	typ(m, "hubuser")
 	key(m, "tab")
+	key(m, "tab")
 	key(m, "enter")
 	if m.last.mode != "stream" || !slices.Equal(m.last.args, []string{"setup", "192.0.2.7", "p2", "hubuser"}) {
 		t.Fatalf("%v", m.last)
 	}
 	key(m, "a")
 	key(m, "esc")
-	if m.form != nil {
+	if m.modal != nil || m.msg != "no project added" {
 		t.Error("esc kept the form")
 	}
 }

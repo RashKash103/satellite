@@ -111,6 +111,9 @@ func (m *model) projectRows(t styles, w int) []string {
 		if p.enabled == "enabled" {
 			tags += " " + t.muted.Render("auto")
 		}
+		if pl := p.plan; pl != nil && !pl.DrainAt.IsZero() && !p.drain {
+			tags += " " + t.accent.Render("drain "+pl.DrainAt.Format("15:04"))
+		}
 		if p.st != nil && p.st.Live() && !p.st.HubOK {
 			tags += " " + t.bad.Render("hub!")
 		}
@@ -245,6 +248,12 @@ func (m *model) detailRows(t styles, w int) []string {
 	r = append(r, kv("disk", ds))
 	if d.Used > 0 {
 		r = append(r, kv("", t.muted.Render("project "+ui.Bytes(d.Used))))
+	}
+	switch {
+	case p.planErr != nil:
+		r = append(r, kv("drain", t.warn.Render(p.planErr.Error())))
+	case p.plan != nil:
+		r = append(r, kv("drain", p.plan.Text(now)+t.muted.Render(" · D changes it")))
 	}
 	r = append(r, kv("files", t.muted.Render(tilde(p.p.Base))))
 	if len(p.alerts) > 0 {
@@ -507,32 +516,28 @@ func containsAny(s string, w ...string) bool {
 
 // tail: the last h lines of ls, scrolled up by m.scroll.
 func (m *model) tail(ls []string, h int) []string {
+	h = max(h, 0)
 	m.scroll = min(m.scroll, max(len(ls)-h, 0))
 	end := len(ls) - m.scroll
 	return ls[max(end-h, 0):end]
 }
 
 func (m *model) footer(t styles) string {
-	if m.confirm != nil {
-		return t.warn.Bold(true).Render(m.confirm.prompt)
-	}
 	if m.input != nil {
 		return m.input.View() + t.muted.Render("  enter apply · esc cancel")
 	}
 	k := func(key, what string) string { return t.accent.Render(key) + " " + t.muted.Render(what) }
 	var ks []string
 	switch {
-	case m.form != nil:
-		ks = []string{k("tab", "next"), k("space", "toggle"), k("enter", "set up"), k("esc", "cancel")}
-	case m.help:
-		ks = []string{k("esc", "close")}
+	case m.modal != nil:
+		ks = m.modal.hints(k)
 	case m.focus == paneMain || m.focus == paneDetails:
 		ks = []string{k("j/k", "scroll"), k("g/G", "top/end"), k("[ ]", "tab"), k("w", "views"), k("/", "filter"), k("tab", "pane")}
 	default:
-		ks = []string{k("j/k", "move"), k("s", "start"), k("x", "stop"), k("d", "drain"), k("c", "check"), k("t", "test"), k("e", "env"), k("a", "add"), k("/", "filter"), k("tab", "pane")}
+		ks = []string{k("j/k", "move"), k("s", "start"), k("x", "stop"), k("d", "drain"), k("D", "schedule"), k("c", "check"), k("t", "test"), k("e", "env"), k("a", "add"), k("/", "filter"), k("tab", "pane")}
 	}
 	end := k("?", "keys") + "  " + k("q", "quit")
-	if m.form != nil || m.help {
+	if m.modal != nil {
 		return strings.Join(ks, "  ")
 	}
 	w := m.w
@@ -563,12 +568,17 @@ var helpGroups = []struct {
 		{"M", "migrate a bash node (~/sat), when there is one"}, {"ctrl+u", "uninstall everything: lists it, asks"},
 		{"?", "this help"}, {"q", "quit"}}},
 	{"Projects and Lanes", [][2]string{
-		{"j k ↑ ↓", "move"}, {"enter", "into the lanes, then a lane's log"}, {"s", "start"}, {"d", "drain"}, {"x", "stop (asks)"},
+		{"j k ↑ ↓", "move"}, {"enter", "into the lanes, then a lane's log"}, {"s", "start"}, {"d", "drain"},
+		{"D", "schedule a drain: start at, or be done by, a time"}, {"x", "stop (asks)"},
 		{"A", "autostart on/off"}, {"c", "check what is missing"}, {"i", "install it: every step shown, asks"},
 		{"t", "selftest"}, {"u", "update: bundle, check, project setup"}, {"e", "edit env in $EDITOR"}, {"E", "edit config"},
 		{"v", "set or unset an env KEY"}, {"l", "the lane's log"}, {"U", "uninstall this project: lists it, asks"}}},
 	{"Right pane and Details", [][2]string{
 		{"j k ↑ ↓", "scroll (the mouse wheel too)"}, {"pgup pgdown", "a page"}, {"g G", "top, end (follow)"}}},
+	{"Dialogs", [][2]string{
+		{"tab ⇧tab ↑ ↓", "the next / previous field or button"}, {"← →", "between the buttons; change a choice"},
+		{"enter", "the focused button (on a field: the next)"}, {"space", "toggle, or the focused button"},
+		{"y n", "yes / no, when the dialog asks one"}, {"esc", "cancel"}, {"mouse", "click a button or a field"}}},
 }
 
 func (m *model) helpLines(t styles, w int) []string {
@@ -587,7 +597,7 @@ func (m *model) helpLines(t styles, w int) []string {
 	var r []string
 	if w >= 76 {
 		cw := (w - 2) / 2
-		a, b := group([]int{0, 2}, cw), group([]int{1}, cw)
+		a, b := group([]int{0, 2}, cw), group([]int{1, 3}, cw)
 		for i := 0; i < max(len(a), len(b)); i++ {
 			l, x := "", ""
 			if i < len(a) {
@@ -599,7 +609,7 @@ func (m *model) helpLines(t styles, w int) []string {
 			r = append(r, ui.Pad(l, cw+2)+x)
 		}
 	} else {
-		r = group([]int{0, 1, 2}, w)
+		r = group([]int{0, 1, 2, 3}, w)
 	}
 	r = append(r, ui.Truncate(t.muted.Render("Install, uninstall, setup --install, self-update and migrate hand the terminal to sat"), w),
 		ui.Truncate(t.muted.Render("itself: it shows exactly what it will do and asks before anything runs."), w))
@@ -625,16 +635,13 @@ func (m *model) View() tea.View {
 	head = ui.Truncate(head, w)
 	bodyH := h - 3
 	var body []string
-	switch {
-	case m.help:
-		hl := m.helpLines(t, w-4)
-		m.helpTop = min(m.helpTop, max(len(hl)-(bodyH-2), 0))
-		note := "esc closes"
-		if len(hl) > bodyH-2 {
-			note = "j/k scroll · " + note
+	if w < 24 || bodyH < 4 { // no room for the panes
+		body = make([]string, max(bodyH, 0))
+		if len(body) > 0 {
+			body[0] = t.muted.Render("the terminal is too small")
 		}
-		body = box(t, 0, t.head.Render("Keys"), note, hl[m.helpTop:], w, bodyH, true)
-	default:
+		m.geo = geometry{}
+	} else {
 		body = m.panes(t, w, bodyH)
 	}
 	msg := ""
@@ -645,7 +652,22 @@ func (m *model) View() tea.View {
 		}
 	}
 	out := append([]string{head}, body...)
+	var dl []string // the dialog, drawn first: the footer lists its keys
+	if d := m.modal; d != nil && h > 1 {
+		dl = d.view(t, w, h-1) // the footer stays: it lists the dialog's keys
+	}
 	out = append(out, ui.Truncate(msg, w), ui.Truncate(m.footer(t), w))
+	if len(out) > h {
+		out = out[len(out)-h:]
+	}
+	for i := range out {
+		out[i] = ui.Truncate(out[i], w)
+	}
+	if d := m.modal; d != nil && len(dl) > 0 {
+		sh := len(out) - 1
+		d.place(w, sh, ui.Width(dl[0]), len(dl))
+		out = append(overlay(t, out[:sh], dl, d.at.x, d.at.y), out[sh:]...)
+	}
 	v := tea.NewView(strings.Join(out, "\n"))
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
@@ -760,18 +782,13 @@ func (m *model) panes(t styles, w, h int) []string {
 		left = append(left, box(t, 3, paneNames[paneDetails], more(t, "", m.dtop, end-m.dtop, len(dr)), dr[m.dtop:end], lw, dh, m.focus == paneDetails)...)
 	}
 	m.lay = l
-	var right []string
-	if m.form != nil {
-		right = box(t, 4, t.head.Render("Add a project"), "sat setup", m.form.view(rw-4), rw, h, true)
-	} else {
-		title, lines, nt := m.mainLines(t, rw-4)
-		for i := range lines {
-			lines[i] = ui.Truncate(lines[i], rw-4)
-		}
-		shown := m.tail(lines, h-2)
-		top := len(lines) - m.scroll - len(shown)
-		right = box(t, 4, title, more(t, nt, top, len(shown), len(lines)), shown, rw, h, m.focus == paneMain)
+	title, lines, nt := m.mainLines(t, rw-4)
+	for i := range lines {
+		lines[i] = ui.Truncate(lines[i], rw-4)
 	}
+	shown := m.tail(lines, h-2)
+	top := len(lines) - m.scroll - len(shown)
+	right := box(t, 4, title, more(t, nt, top, len(shown), len(lines)), shown, rw, h, m.focus == paneMain)
 	m.geo = geometry{mainH: h - 2}
 	m.geo.panes[paneProjects] = rect{0, 1, lw, ph}
 	m.geo.panes[paneLanes] = rect{0, 1 + ph, lw, lh}

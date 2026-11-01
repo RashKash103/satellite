@@ -4,59 +4,65 @@ import (
 	"os"
 	"strings"
 
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/RashKash103/satellite/internal/conf"
-	"github.com/RashKash103/satellite/internal/ui"
 )
 
-// setupForm: `sat setup [--install] HUB_IP PROJECT [HUB_USER]` as a form.
-type setupForm struct {
-	in      [3]textinput.Model // hub IP, project, hub user
-	install bool
-	at      int // 0-2 the inputs, 3 the install choice
-	err     string
-	st      ui.Styles
-}
+// The live view's dialogs, built on modal: confirmations, the setup form, the env prompt, quitting
+// while an action runs, and the help. The drain schedule's is in schedule.go.
 
-var formLabels = [3]string{"Hub IP", "Project", "Hub user"}
-
-func newSetupForm(st ui.Styles) *setupForm {
-	f := &setupForm{st: st}
-	for i, ph := range []string{"192.0.2.10", "the project's name on the hub", os.Getenv("USER")} {
-		f.in[i] = textinput.New()
-		f.in[i].Prompt = ""
-		f.in[i].Placeholder = ph
-		f.in[i].SetWidth(32)
+// confirmDialog: a yes/no question. A dangerous one starts on Cancel, as [y/N] did: enter alone
+// does nothing; y (or the button) does it, n or esc doesn't.
+func (m *model) confirmDialog(title string, body []string, yes string, danger bool, do func() tea.Cmd) *modal {
+	d := &modal{kind: "confirm", title: title, body: body, width: 46,
+		buttons: []button{
+			{label: yes, keys: []string{"y", "Y"}, danger: danger, do: func(*modal) (tea.Cmd, string) { return do(), "" }},
+			{label: "Cancel", keys: []string{"n", "N"}, cancel: true, do: func(*modal) (tea.Cmd, string) {
+				m.say("nothing was done", false)
+				return nil, ""
+			}},
+		}}
+	if danger {
+		d.focus = 1
 	}
-	return f
+	return d
 }
 
-func (f *setupForm) focus() tea.Cmd {
-	var c tea.Cmd
-	for i := range f.in {
-		if i == f.at {
-			c = f.in[i].Focus()
-		} else {
-			f.in[i].Blur()
-		}
+// setupDialog: `sat setup [--install] HUB_IP PROJECT [HUB_USER]` as a form.
+func (m *model) setupDialog() *modal {
+	d := &modal{kind: "setup", title: "Add a project", width: 56,
+		body: []string{"sat setup: a key for the hub, the service, the bundle and a check. Nothing starts until s. Log in to the hub with ssh once first."},
+		fields: []*field{
+			textField("Hub IP", "192.0.2.10", ""),
+			textField("Project", "the project's name on the hub", ""),
+			textField("Hub user", os.Getenv("USER"), ""),
+			checkField("Install", "what is missing (asks first)", false),
+		}}
+	d.buttons = []button{
+		{label: "Set up", do: func(d *modal) (tea.Cmd, string) {
+			a, why := setupArgs(d)
+			if why != "" {
+				return nil, why
+			}
+			title := "setup " + d.fields[1].value()
+			if d.fields[3].on {
+				// It installs only after showing every step and asking: on the terminal.
+				return m.terminal(title, a...), ""
+			}
+			return m.stream(title, a...), ""
+		}},
+		{label: "Cancel", cancel: true, do: func(*modal) (tea.Cmd, string) {
+			m.say("no project added", false)
+			return nil, ""
+		}},
 	}
-	return c
+	return d
 }
 
-func (f *setupForm) update(msg tea.Msg) tea.Cmd {
-	if f.at > 2 {
-		return nil
-	}
-	var c tea.Cmd
-	f.in[f.at], c = f.in[f.at].Update(msg)
-	return c
-}
-
-// args: the setup command line, or why it can't run yet.
-func (f *setupForm) args() ([]string, string) {
-	ip, proj, user := strings.TrimSpace(f.in[0].Value()), strings.TrimSpace(f.in[1].Value()), strings.TrimSpace(f.in[2].Value())
+// setupArgs: the setup command line, or why it can't run yet.
+func setupArgs(d *modal) ([]string, string) {
+	ip, proj, user := d.fields[0].value(), d.fields[1].value(), d.fields[2].value()
 	switch {
 	case ip == "":
 		return nil, "the hub's IP address is needed"
@@ -68,7 +74,7 @@ func (f *setupForm) args() ([]string, string) {
 		return nil, "a user name: letters, digits, . _ - only"
 	}
 	a := []string{"setup"}
-	if f.install {
+	if d.fields[3].on {
 		a = append(a, "--install")
 	}
 	a = append(a, ip, proj)
@@ -78,76 +84,43 @@ func (f *setupForm) args() ([]string, string) {
 	return a, ""
 }
 
-func (m *model) formKey(msg tea.KeyPressMsg) tea.Cmd {
-	f := m.form
-	switch msg.String() {
-	case "esc":
-		m.form = nil
-		m.say("no project added", false)
-		return nil
-	case "tab", "down":
-		f.at = (f.at + 1) % 4
-		return f.focus()
-	case "shift+tab", "up":
-		f.at = (f.at + 3) % 4
-		return f.focus()
-	case "space":
-		if f.at == 3 {
-			f.install = !f.install
-			return nil
-		}
-	case "enter":
-		if f.at < 3 {
-			f.at++
-			return f.focus()
-		}
-		a, why := f.args()
-		if why != "" {
-			f.err = why
-			return nil
-		}
-		m.form = nil
-		title := "setup " + strings.TrimSpace(f.in[1].Value())
-		if f.install {
-			// It installs only after showing every step and asking: on the terminal.
-			return m.terminal(title, a...)
-		}
-		return m.stream(title, a...)
+// envDialog: set or unset one of the project's env keys (sat PROJECT env KEY=VALUE | -KEY).
+func (m *model) envDialog(p *proj) *modal {
+	n := p.p.Name
+	d := &modal{kind: "env", title: "env · " + n, width: 56,
+		body:   []string{"KEY=VALUE sets a key in the project's env file, -KEY unsets it. Every job sources the file, so a change applies from the next job."},
+		fields: []*field{textField("Set", "KEY=VALUE or -KEY", "")}}
+	d.buttons = []button{
+		{label: "Apply", do: func(d *modal) (tea.Cmd, string) {
+			v := d.fields[0].value()
+			k, _, _ := strings.Cut(strings.TrimPrefix(v, "-"), "=")
+			if k == "" || strings.ContainsAny(k, " \t") {
+				return nil, "KEY=VALUE to set, -KEY to unset"
+			}
+			return m.stream("env "+v, n, "env", v), ""
+		}},
+		{label: "Cancel", cancel: true},
 	}
-	return f.update(msg)
+	return d
 }
 
-func (f *setupForm) view(w int) []string {
-	t := tstyle(f.st)
-	lines := []string{
-		t.muted.Render("sat setup: a key for the hub, the service,"),
-		t.muted.Render("the bundle and a check. Nothing starts until s."),
-		t.muted.Render("Log in to the hub with ssh once first."),
-		"",
-	}
-	for i := range f.in {
-		f.in[i].SetWidth(max(w-14, 10))
-		mark := "  "
-		if f.at == i {
-			mark = t.accent.Render("> ")
-		}
-		lines = append(lines, mark+ui.Pad(formLabels[i], 10)+f.in[i].View())
-	}
-	box := "[ ]"
-	if f.install {
-		box = "[x]"
-	}
-	mark := "  "
-	if f.at == 3 {
-		mark = t.accent.Render("> ")
-	}
-	lines = append(lines, mark+ui.Pad("Install", 10)+box+t.muted.Render(" what is missing (space; asks first)"), "")
-	if f.err != "" {
-		lines = append(lines, t.bad.Render(f.err), "")
-	}
-	lines = append(lines, t.muted.Render("tab next · enter on the last: set up · esc"))
-	for i := range lines {
-		lines[i] = ui.Truncate(lines[i], w)
-	}
-	return lines
+// quitDialog: q while an action still runs.
+func (m *model) quitDialog() *modal {
+	return &modal{kind: "quit", title: "Quit?", width: 46,
+		body: []string{m.job.title + " is still running. Quitting now may cut it short."},
+		buttons: []button{
+			{label: "Quit", keys: []string{"y", "Y", "q", "ctrl+c"}, do: func(*modal) (tea.Cmd, string) {
+				m.stopRun()
+				return tea.Quit, ""
+			}},
+			{label: "Stay", keys: []string{"n", "N"}, cancel: true},
+		}, focus: 1}
+}
+
+// helpDialog: every key, scrolled with j/k when it doesn't fit.
+func (m *model) helpDialog() *modal {
+	d := &modal{kind: "help", title: "Keys", width: 96, closeKeys: []string{"?", "q"},
+		buttons: []button{{label: "Close", cancel: true}}}
+	d.render = func(d *modal, t styles, w int) []string { return m.helpLines(t, w) }
+	return d
 }

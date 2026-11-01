@@ -62,6 +62,8 @@ type proj struct {
 	views           []view.View
 	vsig            string        // the views directory as last read (view.Sig)
 	alerts          []agent.Alert // the agent's, a failed service's and the views'
+	plan            *agent.Plan   // the drain schedule (nil: none)
+	planErr         error
 }
 
 // job: an action streaming its output into the Output tab.
@@ -84,11 +86,6 @@ type action struct {
 	args []string
 }
 
-type confirm struct {
-	prompt string
-	yes    func() tea.Cmd
-}
-
 type model struct {
 	version, exe string
 	opt          Options
@@ -98,12 +95,8 @@ type model struct {
 	tab          tab
 	scroll       int // lines up from the end of the right pane (0: follow)
 	filter       [panes]string
-	input        *textinput.Model
-	inputFor     string // "filter", "env"
-	help         bool
-	helpTop      int
-	confirm      *confirm
-	form         *setupForm
+	input        *textinput.Model // the filter being typed
+	modal        *modal           // the dialog open over the panes
 	job          *job
 	jobs         int
 	last         action
@@ -184,6 +177,10 @@ func (m *model) refresh() {
 			x.views, x.vsig = view.List(p), sig // a new bundle: its views are read again
 		}
 		x.st, _ = agent.ReadState(p)
+		x.plan, x.planErr = agent.PlanFor(p, time.Now())
+		if x.st.Live() && x.st.Schedule != nil && x.planErr == nil {
+			x.plan = x.st.Schedule // as the agent sees it
+		}
 		x.active, x.enabled = sysctl("is-active", p.Unit()), sysctl("is-enabled", p.Unit())
 		_, err = os.Stat(filepath.Join(p.State, "drain"))
 		x.drain = err == nil && x.active == "active" // a stopped project is not draining
@@ -403,13 +400,13 @@ func (m *model) loadService() {
 	}
 }
 
-func (m *model) startInput(kind, placeholder, value string) tea.Cmd {
+func (m *model) startFilter(placeholder, value string) tea.Cmd {
 	in := textinput.New()
-	in.Prompt = map[string]string{"filter": "/", "env": "env "}[kind]
+	in.Prompt = "/"
 	in.Placeholder = placeholder
 	in.SetValue(value)
 	in.SetWidth(max(m.w-30, 20))
-	m.input, m.inputFor = &in, kind
+	m.input = &in
 	return in.Focus()
 }
 
@@ -435,9 +432,6 @@ func (m *model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, every()
 	case tea.BackgroundColorMsg:
 		m.st = ui.Palette(msg.IsDark())
-		if m.form != nil {
-			m.form.st = m.st
-		}
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
 	case spinner.TickMsg:
@@ -483,14 +477,22 @@ func (m *model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refresh()
 	case tea.MouseClickMsg:
+		if d := m.modal; d != nil {
+			c, done := d.click(msg.X, msg.Y)
+			return m, m.closed(d, c, done)
+		}
 		m.click(msg.X, msg.Y)
 	case tea.MouseWheelMsg:
+		if m.modal != nil {
+			m.modal.scroll(map[bool]int{true: -1, false: 1}[msg.Button == tea.MouseWheelUp])
+			return m, nil
+		}
 		m.wheel(msg.X, msg.Y, msg.Button == tea.MouseWheelUp)
 	case tea.KeyPressMsg:
 		return m.key(msg)
 	}
-	if m.form != nil {
-		return m, m.form.update(msg)
+	if m.modal != nil {
+		return m, m.modal.update(msg)
 	}
 	if m.input != nil {
 		in, c := m.input.Update(msg)
@@ -502,38 +504,22 @@ func (m *model) handle(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := msg.String()
-	if m.confirm != nil {
-		c := m.confirm
-		m.confirm = nil
-		if k == "y" || k == "Y" {
-			return m, c.yes()
-		}
-		m.say("nothing was done", false)
-		return m, nil
-	}
-	if m.form != nil {
-		return m, m.formKey(msg)
+	if d := m.modal; d != nil {
+		c, done := d.key(msg)
+		return m, m.closed(d, c, done)
 	}
 	if m.input != nil {
 		return m, m.inputKey(msg)
 	}
-	if m.help {
-		switch k {
-		case "?", "esc", "q":
-			m.help = false
-		case "j", "down":
-			m.helpTop++
-		case "k", "up":
-			m.helpTop = max(m.helpTop-1, 0)
-		}
-		return m, nil
-	}
 	switch k {
 	case "q", "ctrl+c":
+		if m.job != nil && m.job.running {
+			return m, m.open(m.quitDialog())
+		}
 		m.stopRun()
 		return m, tea.Quit
 	case "?":
-		m.help, m.helpTop = true, 0
+		return m, m.open(m.helpDialog())
 	case "tab":
 		m.focus = m.nextPane(m.focus, 1)
 	case "shift+tab":
@@ -548,7 +534,7 @@ func (m *model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.filter[m.focus] = ""
 		m.clamp()
 	case "/":
-		return m, m.startInput("filter", "filter "+strings.ToLower(m.paneTitle(m.focus)), m.filter[m.focus])
+		return m, m.startFilter("filter "+strings.ToLower(m.paneTitle(m.focus)), m.filter[m.focus])
 	case "r":
 		m.refresh()
 		m.say("refreshed", false)
@@ -568,8 +554,7 @@ func (m *model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "o":
 		m.setTab(tabOutput)
 	case "a":
-		m.form = newSetupForm(m.st)
-		return m, m.form.focus()
+		return m, m.open(m.setupDialog())
 	case "S":
 		return m, m.terminal("self-update", "self-update")
 	case "M":
@@ -592,7 +577,7 @@ func (m *model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	default:
 		p := m.cur()
 		if p == nil {
-			if len(k) == 1 && strings.Contains("sxdAcitueEvUl", k) {
+			if len(k) == 1 && strings.Contains("sxdDAcitueEvUl", k) {
 				m.say("no project selected: a adds one", true)
 			}
 			return m, nil
@@ -602,36 +587,41 @@ func (m *model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// open shows dialog d over the panes.
+func (m *model) open(d *modal) tea.Cmd {
+	m.modal = d
+	d.fix()
+	return d.focusCmd()
+}
+
+// closed: after a key or a click in dialog d; done closes it, unless what was chosen opened
+// another.
+func (m *model) closed(d *modal, c tea.Cmd, done bool) tea.Cmd {
+	if done && m.modal == d {
+		m.modal = nil
+	}
+	return c
+}
+
 func (m *model) inputKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch msg.String() {
 	case "esc":
-		if m.inputFor == "filter" {
-			m.filter[m.focus] = ""
-			m.clamp()
-		}
+		m.filter[m.focus] = ""
+		m.clamp()
 		m.input = nil
 	case "enter":
-		v := strings.TrimSpace(m.input.Value())
+		m.filter[m.focus] = strings.TrimSpace(m.input.Value())
 		m.input = nil
-		if m.inputFor == "filter" {
-			m.filter[m.focus] = v
-			m.clamp()
-			return nil
-		}
-		if p := m.cur(); p != nil && v != "" {
-			return m.stream("env "+v, p.p.Name, "env", v)
-		}
+		m.clamp()
 	default:
 		in, c := m.input.Update(msg)
 		m.input = &in
-		if m.inputFor == "filter" {
-			m.filter[m.focus] = in.Value()
-			if m.focus != paneMain {
-				m.sel[m.focus] = 0
-			}
-			m.scroll = 0
-			m.clamp()
+		m.filter[m.focus] = in.Value()
+		if m.focus != paneMain {
+			m.sel[m.focus] = 0
 		}
+		m.scroll = 0
+		m.clamp()
 		return c
 	}
 	return nil
@@ -646,7 +636,10 @@ func (m *model) projectKey(p *proj, k string) tea.Cmd {
 	case "d":
 		return m.stream("drain "+n, n, "drain")
 	case "x":
-		m.confirm = &confirm{fmt.Sprintf("Stop %s now? Its running jobs go back to the hub. [y/N]", n), func() tea.Cmd { return m.stream("stop "+n, n, "stop") }}
+		return m.open(m.confirmDialog("Stop "+n, []string{fmt.Sprintf("Stop %s now? Its running jobs go straight back to the hub (d drains instead: they finish first).", n)},
+			"Stop", true, func() tea.Cmd { return m.stream("stop "+n, n, "stop") }))
+	case "D":
+		return m.open(m.scheduleDialog(p))
 	case "A":
 		if p.enabled == "enabled" {
 			return m.stream("autostart off "+n, n, "autostart", "off")
@@ -667,7 +660,7 @@ func (m *model) projectKey(p *proj, k string) tea.Cmd {
 	case "E":
 		return m.edit(p, "config")
 	case "v":
-		return m.startInput("env", "KEY=VALUE to set, -KEY to unset", "")
+		return m.open(m.envDialog(p))
 	case "l":
 		m.setTab(tabLog)
 		m.focus = paneMain
