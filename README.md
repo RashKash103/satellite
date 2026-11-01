@@ -32,6 +32,10 @@ for it.
 - **Easy on and off.** `sat start`, `sat drain` (finish what's running, then stop), `sat stop`,
   `sat autostart on|off`. A node is a systemd user service, and `sat` alone is a live view of its
   lanes, their jobs and progress.
+- **Scheduled drains.** `sat PROJECT schedule end 19:00 daily` has the node stopped by 19:00
+  every day: it stops taking jobs once a typical one (the p80 of its recent jobs) would no longer
+  finish in time. `start 18:00` drains from a time instead; once or daily, set from the command
+  line or the live view (`D`), and kept by the service itself.
 - **Views and alerts.** A project can bring its own views of its work (a queue, a lane's steps,
   charts), shown by `sat PROJECT view NAME` and as tabs in the live view. The node raises alerts
   when a lane stalls, the hub goes quiet or the disk fills, and can send a desktop notification.

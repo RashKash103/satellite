@@ -45,9 +45,13 @@ a fake `systemctl` that only records what it is asked. It checks:
 - the hello example's views against the running agent: listed, run once (asking the hub through
   `sat-call`), and a lane's stream followed as the job goes and stopped by ctrl+c;
 - an alert raised by the agent (the disk floor), listed by `alerts` and `status`, notified once
-  through a fake `notify-send`, and cleared.
+  through a fake `notify-send`, and cleared;
+- drain schedules: a start-anchored daily one stopping the agent after its running job, kept (marked
+  as fired) for the next day, through `sat start` too; an end-anchored one claiming while a p80 job
+  still fits before its time, then, with jobs that take longer, claiming nothing more, stopping the
+  agent and clearing itself.
 
-It takes about 50 seconds and needs bash and coreutils. Timings are shortened with
+It takes about 75 seconds and needs bash and coreutils. Timings are shortened with
 `SAT_TEST_FAST=1`.
 
 ## `test/run`

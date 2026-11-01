@@ -58,6 +58,8 @@ lease.
 A clean stop is quicker:
 
 - `sat drain`: no new claims; the service stops when the running jobs finish.
+- A [scheduled drain](node.md#scheduled-drains) is the same drain, begun by the agent itself at a
+  time, or early enough that a typical job still ends before a time.
 - `sat stop` or a normal shutdown: systemd's `ExecStop` releases the running jobs at once, then stops
   the processes.
 
@@ -106,7 +108,8 @@ git host, and so on.
 ~/.sat/projects/PROJECT/state/      agent.json (what the live view reads), agent.log, lane claims,
                                     running jobs (slotN.job, slotN.exit: for an agent to adopt
                                     after an update), logs and progress, the drain flag, the
-                                    project's own state
+                                    drain schedule (schedule.json), the jobs this node finished
+                                    (history.jsonl, the last 200), the project's own state
 ~/.config/systemd/user/sat@.service the unit, one instance per project
 ~/.ssh/sat_ed25519, ~/.ssh/config   the node key and the sat-hub-IP alias
 ```

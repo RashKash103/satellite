@@ -101,13 +101,22 @@ size and background: as it shrinks, the charts go first, then Details. It reads 
 write and opens no connection of its own (a view it runs may: `sat-call`).
 
 Everything the command line does can be done from it, and it runs the same `sat` commands to do
-it: `s` start, `d` drain, `x` stop (asks first), `A` autostart, `c` check, `t` selftest, `u` update,
-`e` and `E` open the project's `env` and `config` in `$VISUAL` or `$EDITOR` (else nano, else vi),
-`v` sets or unsets an env key, `a` adds a project (`sat setup`, as a form). Those stream their
-output into the right pane. `i` install, `U` uninstall the project, `ctrl+u` uninstall everything,
+it: `s` start, `d` drain, `D` [schedule a drain](#scheduled-drains), `x` stop (asks first), `A`
+autostart, `c` check, `t` selftest, `u` update, `e` and `E` open the project's `env` and `config` in
+`$VISUAL` or `$EDITOR` (else nano, else vi), `v` sets or unsets an env key, `a` adds a project
+(`sat setup`, as a form). Those stream their output into the right pane. `i` install, `U` uninstall the project, `ctrl+u` uninstall everything,
 `S` self-update and `M` migrate (offered when a bash node is found) hand the terminal to `sat`
 itself, which shows exactly what it will do and asks before anything runs, as on the command line;
 `enter` then brings the live view back.
+
+Questions and forms open as **dialogs** in the middle of the screen: stopping a project, the
+drain schedule, adding a project, setting an env key, quitting while an action still runs, and
+the key list (`?`). `tab` / `shift+tab` (or `↑` `↓`) move between a dialog's fields and buttons,
+`←` `→` between the buttons or through a field's choices, `enter` or `space` choose the focused
+button (on a field, `enter` moves to the next), `esc` cancels, and `y` / `n` answer a yes-or-no
+question; the mouse clicks buttons and fields and scrolls a long dialog. A dialog checks what is
+typed into it as you go and says what is wrong in place. Stopping, which hands running jobs back,
+starts on Cancel: `enter` alone does nothing.
 
 `sat [PROJECT] COMMAND`, or `sat COMMAND PROJECT`. PROJECT can be left out when the node has only one
 (`sat status` then shows them all).
@@ -116,6 +125,7 @@ itself, which shows exactly what it will do and asks before anything runs, as on
 |---|---|
 | `start` | start taking jobs |
 | `drain` | take no new jobs; stop once the running ones finish (use before shutting down) |
+| `schedule [start\|end HH:MM [daily\|YYYY-MM-DD] \| off]` | drain at a time, or be stopped by one, once or daily ([below](#scheduled-drains)); alone, show the schedule |
 | `stop` | stop now; running jobs go straight back to the hub |
 | `status` | running or not, autostart, the hub and its protocol, jobs in progress, disk room, the last log lines |
 | `logs` | follow the service log |
@@ -196,6 +206,7 @@ avoids throwing away work in progress.
 | `MAX_GB` | caps this project's directory (default 0: no cap; a project's defaults may set one) |
 | `STALL_MIN` | minutes without new output from a lane's job before it is an [alert](#alerts) (default 30; 0: never) |
 | `JOB_WARN_MIN` | minutes a job may run before it is an alert (default: no limit) |
+| `JOB_EST_MIN` | minutes a job is taken to last by an end-anchored [drain schedule](#scheduled-drains) before this node has finished any (default 30) |
 | `TRANSPORT` | `native` (default): `sat` holds one SSH connection to the hub open; `exec`: it runs the system `ssh` with the alias for each call, as the bash node did (setup picks this when only the system ssh gets through, say through a jump host) |
 
 Projects may add their own keys (through `sat/defaults`) for their jobs to read. Keys may also go
@@ -221,6 +232,56 @@ Below the free-space floor, or over `MAX_GB`, a lane takes no new jobs: it first
 `sat status` and in the live view. If free space falls below half the floor while a job runs, the
 job is stopped and handed back to the hub, so a full disk never takes the machine down with it. The
 project's size is measured at most every 30 minutes, at low priority.
+
+## Scheduled drains
+
+A project can drain by itself at a time of day, so a node lends its CPU until, say, the evening
+and is idle when you want the machine back:
+
+```sh
+sat hello schedule start 18:00 daily     # stop taking jobs at 18:00 every day
+sat hello schedule end 19:00 daily       # be stopped by 19:00 every day
+sat hello schedule end 07:30 2026-11-03  # once, on that day (no date: the next 07:30)
+sat hello schedule                       # what is scheduled, and when it drains next
+sat hello schedule off
+```
+
+or `D` on a project in the live view, a dialog with the same choices (Save, Remove schedule,
+Cancel) that shows what the schedule would do as you type.
+
+- **start** drains at the time: no new jobs from then, and the service stops once the running
+  ones finish, as `sat drain`.
+- **end** has the service stopped by the time. It stops taking jobs once a typical job would no
+  longer finish before it: at the time less the 80th percentile of how long this project's jobs
+  took on this node (the last 50 that passed or failed, within 14 days). With fewer than 5 such
+  jobs it uses the longest of them, and with none `JOB_EST_MIN` (30 minutes by default); `sat
+  PROJECT schedule`, `sat status`, the dialog and Details say which. A job already running when
+  the drain begins still runs to its end, so one that takes longer than most can run past the
+  time.
+- Times are this machine's local wall-clock time. A daily schedule drains at that hour every
+  day, through daylight-saving changes; a time the clocks skip (02:30 on the night they go
+  forward) is taken as the same moment after the jump.
+- A one-time schedule removes itself once its drain has begun. A daily one stays: it is kept in
+  `state/schedule.json`, apart from the drain flag, so `start` (which cancels a drain that is
+  still pending), `stop` and a shutdown leave it in place, and `sat start` after a scheduled
+  drain carries on until the next day's.
+
+The service enforces the schedule, not the live view, so it holds with nothing open: the agent
+reads `state/schedule.json` every couple of seconds and again before each claim, and shows its
+plan in `state/agent.json` (`sat status`: "drain at 18:40 today (done by 19:00, p80 20m)"; the
+live view: "drain 18:40" on the project's row, the whole line in Details). A schedule only does
+something while the service runs.
+
+**Asleep or off at the time.** A drain may begin up to 15 minutes late: a node that wakes from a
+suspend (or starts) within that window drains then. Later than that the occurrence is skipped,
+and the log says so: a daily schedule waits for the next day rather than stop the node hours after
+the time it was meant for, and a one-time schedule that was missed is removed. Starting the
+service inside an end-anchored window (when a typical job would no longer be done in time) drains
+it at once: that is what the schedule asks. A schedule saved after the day's time has passed
+starts with the next day's.
+
+The agent records each job it finishes (start, end, outcome) in `state/history.jsonl`, the last
+200, for these estimates.
 
 ## Alerts
 
