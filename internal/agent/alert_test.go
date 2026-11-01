@@ -177,3 +177,31 @@ func TestActive(t *testing.T) {
 		t.Error(ids(as))
 	}
 }
+
+// A node that slept: its jobs had shown nothing for the length of the suspend, but they were not
+// stalled; the stall clock counts from the wake.
+func TestNoStallAcrossASuspend(t *testing.T) {
+	t0 := time.Unix(1700000000, 0)
+	f := Facts{Now: t0.Add(3 * time.Hour), Lanes: []Lane{{Slot: 1, ID: "j1", Started: t0}}, StallMin: 30}
+	if got := ids(Evaluate(f, nil)); got != "stall:1" {
+		t.Fatalf("without a wake: %q", got)
+	}
+	f.Woke = f.Now.Add(-5 * time.Minute)
+	if got := ids(Evaluate(f, nil)); got != "" {
+		t.Errorf("5 min after the wake: %q", got)
+	}
+	f.Now = f.Woke.Add(31 * time.Minute)
+	if got := ids(Evaluate(f, nil)); got != "stall:1" {
+		t.Errorf("31 min after the wake with nothing new: %q", got)
+	}
+}
+
+func TestSuspendSeen(t *testing.T) {
+	now := time.Now()
+	if suspended(time.Time{}, now) || suspended(now.Add(-15*time.Second), now) {
+		t.Error("no suspend: the clocks agree")
+	}
+	if !slept(3*time.Hour, 15*time.Second) || slept(15*time.Second+59*time.Second, 15*time.Second) {
+		t.Error("slept")
+	}
+}

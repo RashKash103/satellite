@@ -46,6 +46,7 @@ type Facts struct {
 	Lanes    []Lane
 	Activity map[int]time.Time // per lane: the last change to its log, progress or other state/slotN.* file
 	StallMin int               // STALL_MIN (0: off)
+	Woke     time.Time         // the node last woke from a suspend (zero: never seen one)
 	WarnMin  int               // JOB_WARN_MIN (0: off)
 	HubDown  time.Time         // when the hub stopped answering (zero: it answers)
 	HubErr   string
@@ -67,6 +68,9 @@ func Evaluate(f Facts, prev []Alert) []Alert {
 		last := l.Started
 		if a := f.Activity[l.Slot]; a.After(last) {
 			last = a
+		}
+		if f.Woke.After(last) {
+			last = f.Woke // a suspended node's jobs were not stalled: count from the wake
 		}
 		if f.StallMin > 0 && !last.IsZero() && f.Now.Sub(last) >= time.Duration(f.StallMin)*time.Minute {
 			add(fmt.Sprintf("stall:%d", l.Slot), Warn, fmt.Sprintf("lane %d stalled: %s has shown nothing new for %s", l.Slot, l.ID, ui.Dur(f.Now.Sub(last))))
@@ -273,3 +277,15 @@ func (n *Notifier) notify(project string, as []Alert, on bool, log func(string, 
 		}(as[i])
 	}
 }
+
+// suspended: the machine slept between prev and now. The monotonic clock stops while it is suspended
+// and the wall clock does not, so the wall clock running a minute ahead of it means a suspend.
+func suspended(prev, now time.Time) bool {
+	if prev.IsZero() {
+		return false
+	}
+	return slept(now.Round(0).Sub(prev.Round(0)), now.Sub(prev))
+}
+
+// slept: the wall clock ran more than a minute ahead of the monotonic one.
+func slept(wall, mono time.Duration) bool { return wall-mono > time.Minute }

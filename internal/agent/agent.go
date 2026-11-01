@@ -72,6 +72,8 @@ type Agent struct {
 	diskNote time.Time  // the last "not taking work" line
 	// for the alerts
 	hubDown  time.Time // the hub stopped answering
+	tick     time.Time // the last alerts round (with its monotonic reading)
+	woke     time.Time // the node last woke from a suspend
 	diskSeen bool      // the disk has been measured
 	missing  string    // requirements missing
 	starts   int       // starts within RestartWindow
@@ -276,6 +278,11 @@ func (a *Agent) alerts(s State) []Alert {
 		Update: selfupdate.Cached(a.Version)}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if suspended(a.tick, now) {
+		a.woke = now
+		a.hubDown = time.Time{} // nor was the hub down while we slept
+	}
+	a.tick, f.Woke = now, a.woke
 	if a.st.HubOK {
 		a.hubDown = time.Time{}
 	} else if a.hubDown.IsZero() {
