@@ -19,6 +19,8 @@ var helps = []cmdHelp{
 	{name: "stop", short: "stop now; jobs in progress go straight back to the hub"},
 	{name: "drain", short: "take no new jobs; stop once the running ones finish",
 		long: "Use it before shutting the machine down to keep the work in progress. A normal\nshutdown is safe without it: stopping hands running jobs back."},
+	{name: "schedule", args: "[start|end HH:MM [daily|YYYY-MM-DD] | off]", short: "drain at a time, or be stopped by it; once or daily",
+		long: "start HH:MM: stop taking jobs at that time, and stop once the running ones finish.\nend HH:MM: be stopped by that time: stop taking jobs once a typical job (the p80 of\nthis node's recent ones) would no longer finish by it. daily repeats it every day;\nelse it is once, on the date given or the next time the clock reads HH:MM. With no\nwords, shows the schedule; off removes it. The service enforces it, and start\nkeeps it. docs/node.md#scheduled-drains"},
 	{name: "status", short: "service state, hub, jobs in progress, disk use, recent log lines",
 		long: "With no PROJECT, or several projects on the node, it shows them all."},
 	{name: "logs", short: "follow the service log"},

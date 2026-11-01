@@ -262,6 +262,15 @@ func (c *completer) projectArgs(name, cmd string, a []string, cur string, orProj
 		if len(pos) == 0 {
 			c.add("values", "autostart", cand{"on", "start at boot"}, cand{"off", "don't start at boot"})
 		}
+	case "schedule":
+		switch len(pos) {
+		case 0:
+			c.add("values", "schedule", cand{"start", "drain from a time"}, cand{"end", "be stopped by a time"}, cand{"off", "remove the schedule"})
+		case 2:
+			if pos[0] == "start" || pos[0] == "end" {
+				c.add("values", "repeat", cand{"daily", "every day"}, cand{"once", "the next time only"})
+			}
+		}
 	case "alerts":
 		c.flags(cur, len(c.gs) > 0, append(watchFlags, helpFlag)...)
 	case "view":

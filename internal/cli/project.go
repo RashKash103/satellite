@@ -114,6 +114,8 @@ func project(name, cmd string, a []string) int {
 		return viewsCmd(p)
 	case "view":
 		return viewCmd(p, a)
+	case "schedule":
+		return scheduleCmd(p, a)
 	default:
 		failHint("no command "+cmd, "sat help lists them")
 		return 2

@@ -39,6 +39,16 @@ type statusInfo struct {
 	Alerts               []agent.Alert
 	Disk                 agent.Disk
 	Log                  []string
+	Plan                 *agent.Plan // the drain schedule
+	PlanErr              error
+}
+
+// scheduleText: "be stopped by 19:00, daily: drain at 18:40 today (done by 19:00, p80 20m), daily".
+func (s *statusInfo) scheduleText(now time.Time) string {
+	if s.PlanErr != nil {
+		return s.PlanErr.Error()
+	}
+	return s.Plan.Schedule.Describe() + ": " + s.Plan.Text(now)
 }
 
 const (
@@ -79,8 +89,12 @@ func gather(t *ui.T, p *conf.Project) *statusInfo {
 	var pe hub.ProtocolError
 	s.NotClaiming = errors.As(s.HubErr, &pe)
 	s.Alerts = alertsOf(p, s.State)
+	s.Plan, s.PlanErr = agent.PlanFor(p, time.Now())
 	if st, err := agent.ReadState(p); err == nil && st.Live() {
 		s.Live, s.Note, s.Lanes = true, st.Note, st.Lanes
+		if st.Schedule != nil && s.PlanErr == nil {
+			s.Plan = st.Schedule // as the agent sees it
+		}
 		if st.Restart != "" && time.Since(st.RestartAt) < time.Hour {
 			s.Restart, s.RestartAt = st.Restart, st.RestartAt
 		}
@@ -148,6 +162,9 @@ func (s *statusInfo) renderPlain(t *ui.T, now time.Time) {
 	if s.Missing > 0 {
 		t.Printf("requirements: %d missing, so the service won't start (sat %s check)\n", s.Missing, s.Name)
 	}
+	if s.Plan != nil || s.PlanErr != nil {
+		t.Printf("schedule: %s\n", s.scheduleText(now))
+	}
 	for _, a := range s.Alerts {
 		t.Printf("alert: %s: %s (since %s)\n", a.Level, a.Text, sinceWord(a.Since, now))
 	}
@@ -204,6 +221,11 @@ func (s *statusInfo) renderStyled(t *ui.T, now time.Time) {
 	}
 	if s.Note != "" {
 		rows = append(rows, []string{t.Muted("agent"), t.Warn(s.Note)})
+	}
+	if s.PlanErr != nil {
+		rows = append(rows, []string{t.Muted("drain"), t.Warn(s.PlanErr.Error())})
+	} else if s.Plan != nil {
+		rows = append(rows, []string{t.Muted("drain"), s.Plan.Schedule.Describe() + t.Muted(": "+s.Plan.Text(now))})
 	}
 	for _, a := range s.Alerts {
 		rows = append(rows, []string{t.Muted("alert"), alertText(t, a, now)})

@@ -24,6 +24,7 @@ sat [PROJECT] COMMAND        PROJECT may be left out when only one is set up
   start            take jobs from the hub now
   stop             stop now; jobs in progress go straight back to the hub
   drain            take no new jobs; stop once the running ones finish
+  schedule [start|end HH:MM [daily|DATE] | off]   drain at a time, or be stopped by it
   status           service state, hub, jobs in progress, disk use, recent log lines
   logs             follow the service log
   alerts [-w]      what needs attention: stalled lanes, an unreachable hub, a full disk ...
