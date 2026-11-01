@@ -77,6 +77,12 @@ type Agent struct {
 	diskSeen bool      // the disk has been measured
 	missing  string    // requirements missing
 	starts   int       // starts within RestartWindow
+	// the drain schedule
+	histMu   sync.Mutex // one history write at a time
+	schedMu  sync.Mutex // one schedule check at a time
+	plan     *Plan      // the schedule as last checked (nil: none)
+	missed   time.Time  // the skipped occurrence last logged
+	schedErr string     // the unreadable schedule last logged
 }
 
 func (a *Agent) Logf(f string, v ...any) {
@@ -254,6 +260,12 @@ func (a *Agent) writeState(running bool) {
 		}
 	}
 	s.Alerts = a.alerts(s)
+	a.schedMu.Lock()
+	if a.plan != nil {
+		pl := *a.plan
+		s.Schedule = &pl
+	}
+	a.schedMu.Unlock()
 	b, _ := jsonIndent(s)
 	conf.WriteAtomic(StatePath(a.P), b, 0o644)
 }
@@ -391,6 +403,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if !a.noClaim {
 		a.runScript(ctx, "sync")
 	}
+	a.checkSchedule(time.Now())
 	a.writeState(true)
 
 	var wg sync.WaitGroup
@@ -429,6 +442,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.Logf("drained: stopping")
 			return nil
 		case <-st.C:
+			a.checkSchedule(time.Now())
 			a.writeState(true)
 			if time.Since(lastBundle) >= a.IV.Bundle {
 				lastBundle = time.Now()
@@ -480,6 +494,9 @@ func (a *Agent) lane(ctx context.Context, i int, claim bool) {
 			a.setLane(i, func(l *Lane) { l.Waiting = "hub" })
 			a.nap(ctx, a.IV.Unreach)
 			continue
+		}
+		if a.checkSchedule(time.Now()); a.stopping() {
+			break // a scheduled drain began
 		}
 		line, rc, err := a.call(ctx, nil, "claim", a.name, strconv.Itoa(slot))
 		if err != nil || rc != 0 {
@@ -726,6 +743,17 @@ func (a *Agent) finish(ctx context.Context, i int, j *Job, rc int, lost, stopped
 	slot, id := i+1, j.ID
 	defer a.done(i)
 	bg := context.WithoutCancel(ctx)
+	out := "back"
+	switch {
+	case lost:
+		out = "lost"
+	case stopped, full:
+	case rc == 0:
+		out = "passed"
+	case rc == 1:
+		out = "failed"
+	}
+	a.record(Finished{ID: id, Start: j.Started, End: time.Now(), Outcome: out})
 	switch {
 	case lost:
 		a.Logf("[%d] %s stopped (lease lost)", slot, id)

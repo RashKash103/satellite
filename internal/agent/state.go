@@ -36,6 +36,7 @@ type State struct {
 	RestartAt   time.Time `json:"restart_at,omitzero"`
 	Lanes       []Lane    `json:"lanes"`
 	Alerts      []Alert   `json:"alerts,omitempty"`
+	Schedule    *Plan     `json:"schedule,omitempty"` // the drain schedule, and when it drains next
 }
 
 type Lane struct {
