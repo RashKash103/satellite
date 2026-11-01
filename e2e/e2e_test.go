@@ -56,7 +56,7 @@ type hub struct {
 // newHub sets up a hub with the hello project. hooks is the hello example to use (a copy, when a
 // test changes its bundle); gate is the gate to run (a copy, when a test changes sat-hub).
 func newHub(t *testing.T, hooks, gate string) *hub {
-	d := t.TempDir()
+	d := tempDir(t)
 	h := &hub{t: t, dir: d, home: filepath.Join(d, "hubhome"), conf: filepath.Join(d, "conf"), hello: filepath.Join(d, "hello"), gate: gate, keys: map[string]string{}}
 	os.MkdirAll(filepath.Join(h.conf, "projects"), 0o755)
 	os.MkdirAll(filepath.Join(h.hello, "queue"), 0o755)
@@ -235,7 +235,7 @@ exit 0
 
 // newNode: a node for the hello project, with its key bound to name on the hub.
 func newNode(t *testing.T, h *hub, name, config string) *node {
-	n := &node{t: t, h: h, home: filepath.Join(t.TempDir(), "home"), name: name}
+	n := &node{t: t, h: h, home: filepath.Join(tempDir(t), "home"), name: name}
 	ssh_ := filepath.Join(n.home, ".ssh")
 	os.MkdirAll(ssh_, 0o700)
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
@@ -350,6 +350,39 @@ func (n *node) agent() *running {
 		}
 	})
 	return r
+}
+
+// tempDir: t.TempDir, and before it is removed, every process still at work in it is killed (a job's
+// process group can outlive the agent by a moment and write into it: "directory not empty").
+func tempDir(t *testing.T) string {
+	d := t.TempDir()
+	t.Cleanup(func() { reap(d) }) // runs before TempDir's RemoveAll (cleanups run last first)
+	return d
+}
+
+// reap kills the processes whose working directory is under dir or whose environment names it, and
+// waits up to 5 s for them to go.
+func reap(dir string) {
+	self := os.Getpid()
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		ps, _ := filepath.Glob("/proc/[0-9]*")
+		left := 0
+		for _, p := range ps {
+			var pid int
+			if fmt.Sscan(filepath.Base(p), &pid); pid == self || pid <= 1 {
+				continue
+			}
+			cwd, _ := os.Readlink(p + "/cwd")
+			env, _ := os.ReadFile(p + "/environ")
+			if strings.HasPrefix(cwd, dir) || bytes.Contains(env, []byte(dir)) {
+				syscall.Kill(pid, syscall.SIGKILL)
+				left++
+			}
+		}
+		if left == 0 {
+			return
+		}
+	}
 }
 
 func waitFor(t *testing.T, what string, d time.Duration, f func() bool) {
