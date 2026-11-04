@@ -108,6 +108,8 @@ func project(name, cmd string, a []string) int {
 		return code(err)
 	case "env":
 		return envCmd(p, a)
+	case "config":
+		return configCmd(p, a)
 	case "update":
 		return update(p)
 	case "views":

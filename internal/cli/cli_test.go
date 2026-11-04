@@ -32,6 +32,33 @@ func TestEnvCmd(t *testing.T) {
 	}
 }
 
+// sat PROJECT config: a key keeps its place, odd values are quoted, and the agent's parser reads
+// back what was written.
+func TestConfigCmd(t *testing.T) {
+	d := t.TempDir()
+	p := &conf.Project{Name: "p", Base: d}
+	f := filepath.Join(d, "config")
+	os.WriteFile(f, []byte("HUB=sat-hub-x\nSLOTS=1   # lanes\n# a note\nSTALL_MIN=30\n"), 0o644)
+	configCmd(p, []string{"SLOTS=3"})
+	configCmd(p, []string{"-STALL_MIN"})
+	configCmd(p, []string{"NOTE=two words"})
+	got, _ := os.ReadFile(f)
+	want := "HUB=sat-hub-x\nSLOTS=3\n# a note\nNOTE='two words'\n"
+	if string(got) != want {
+		t.Fatalf("%q", got)
+	}
+	m, err := conf.Parse(f, nil)
+	if err != nil || m["SLOTS"] != "3" || m["NOTE"] != "two words" || m["STALL_MIN"] != "" {
+		t.Fatalf("parsed: %v %v", m, err)
+	}
+	if configCmd(p, []string{"1X=2"}) == 0 || configCmd(p, []string{"X"}) == 0 {
+		t.Fatal("bad input accepted")
+	}
+	if configCmd(p, []string{"-NOPE"}) != 0 {
+		t.Fatal("unsetting a key that is not there is not an error")
+	}
+}
+
 func TestAlias(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "config")
 	os.WriteFile(f, []byte("Host a\n  HostName 1\n"), 0o600)

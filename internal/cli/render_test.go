@@ -206,3 +206,31 @@ func TestErrors(t *testing.T) {
 		t.Fatalf("%d %d %q", rc, rc2, got)
 	}
 }
+
+// SLOTS went down while a lane ran a job, and a key waits for a restart.
+func TestStatusLiveConfig(t *testing.T) {
+	s := sample()
+	s.Lanes[0].Draining, s.Pending = true, []string{"HUB"}
+	var b strings.Builder
+	s.render(ui.Plain(&b), now)
+	for _, w := range []string{"lane 1: job42 for 3m00s, renewed 12s ago, 40% linking (draining: the lane closes after this job)\n",
+		"config: HUB changed, applies when the service starts again (sat demo stop && sat demo start)\n"} {
+		if !strings.Contains(b.String(), w) {
+			t.Errorf("plain lacks %q:\n%s", w, b.String())
+		}
+	}
+	b.Reset()
+	s.render(ui.Styled(&b, true, 140), now)
+	got := ui.Strip(b.String())
+	for _, w := range []string{"● demo  running · autostart on · restart to apply", "draining: closes after this job",
+		"config  HUB changed: applies when the service starts again: sat demo stop && sat demo start"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("styled lacks %q:\n%s", w, got)
+		}
+	}
+	b.Reset()
+	overview(ui.Styled(&b, true, 120), []*statusInfo{s, sample()})
+	if got := ui.Strip(b.String()); !strings.Contains(got, "demo (restart to apply)") || !strings.Contains(got, "1 of 2 busy (1 draining)") {
+		t.Errorf("overview:\n%s", got)
+	}
+}

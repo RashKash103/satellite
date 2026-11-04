@@ -117,6 +117,9 @@ func (m *model) projectRows(t styles, w int) []string {
 		if p.st != nil && p.st.Live() && !p.st.HubOK {
 			tags += " " + t.bad.Render("hub!")
 		}
+		if p.st != nil && p.st.Live() && len(p.st.Pending) > 0 {
+			tags += " " + t.warn.Render("restart!") // config waiting for a restart: details say which
+		}
 		name := p.p.Name
 		alert := lipgloss.NewStyle()
 		switch agent.Worst(p.alerts) {
@@ -174,6 +177,9 @@ func (m *model) laneText(p *proj, slot, w int) string {
 		return t.muted.Render("idle: waiting for work")
 	}
 	s := t.bold.Render(l.ID) + " " + Dur(time.Since(l.Started))
+	if l.Draining {
+		s += " " + t.warn.Render("draining") // the details say it closes after this job
+	}
 	if l.Percent >= 0 {
 		if n := w - ui.Width(s) - 7; n >= 6 {
 			s += " " + bar(t, l.Percent, min(n, 14))
@@ -244,6 +250,31 @@ func (m *model) detailRows(t styles, w int) []string {
 	ds := fmt.Sprintf("%d GB free", d.Avail>>30) + t.muted.Render(fmt.Sprintf(" · keeps %d GB", d.Need>>30))
 	if !d.OK(1) {
 		ds = t.warn.Render(fmt.Sprintf("%d GB free: holding, low on room", d.Avail>>30))
+	}
+	if st.Live() {
+		open, draining := 0, 0
+		for _, l := range st.Lanes {
+			if !l.Off {
+				open++
+			}
+			if l.Draining {
+				draining++
+			}
+		}
+		ls := fmt.Sprintf("%d", open)
+		if draining > 0 {
+			ls += t.warn.Render(fmt.Sprintf(" (%d draining: closes after its job)", draining))
+		}
+		if st.Slots > 0 && st.Slots != open-draining {
+			ls += t.muted.Render(fmt.Sprintf(" · SLOTS %d", st.Slots))
+		}
+		if draining > 0 || (st.Slots > 0 && st.Slots != open-draining) {
+			r = append(r, kv("lanes", ls)) // only when it says more than the lanes pane
+		}
+		if len(st.Pending) > 0 {
+			r = append(r, kv("config", t.warn.Render(strings.Join(st.Pending, ", ")+" changed: restart to apply")))
+			r = append(r, kv("", t.muted.Render("sat "+p.p.Name+" stop && sat "+p.p.Name+" start")))
+		}
 	}
 	r = append(r, kv("disk", ds))
 	if d.Used > 0 {

@@ -302,6 +302,16 @@ func (c *completer) projectArgs(name, cmd string, a []string, cur string, orProj
 			c.add("keys", "set a key", set...)
 			c.add("unset", "unset a key", unset...)
 		}
+	case "config":
+		if len(a) == 0 && p != nil {
+			var unset, set []cand
+			for _, kv := range configKeys(p) {
+				unset = append(unset, cand{"-" + kv.v, "unset (now " + kv.d + ")"})
+				set = append(set, cand{kv.v + "=", "set (now " + kv.d + ")"})
+			}
+			c.add("keys", "set a key", set...)
+			c.add("unset", "unset a key", unset...)
+		}
 	default:
 		c.flags(cur, len(c.gs) > 0, helpFlag)
 	}
@@ -327,6 +337,22 @@ func laneCands(p *conf.Project) []cand {
 			d = "running " + j
 		}
 		cs = append(cs, cand{strconv.Itoa(i), d})
+	}
+	return cs
+}
+
+// configKeys: the keys the project's config sets, with their values as written.
+func configKeys(p *conf.Project) []cand {
+	b, _ := os.ReadFile(filepath.Join(p.Base, "config"))
+	var cs []cand
+	for _, l := range strings.Split(string(b), "\n") {
+		k, v, ok := strings.Cut(strings.TrimPrefix(strings.TrimSpace(l), "export "), "=")
+		if ok && envKey.MatchString(k) && !slices.ContainsFunc(cs, func(c cand) bool { return c.v == k }) {
+			if i := strings.IndexAny(v, " \t"); i >= 0 {
+				v = v[:i] // a comment after the value
+			}
+			cs = append(cs, cand{k, v})
+		}
 	}
 	return cs
 }

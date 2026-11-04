@@ -33,9 +33,10 @@ type statusInfo struct {
 	Note                 string
 	Restart              string // the agent re-executed and adopted running jobs, within the hour
 	RestartAt            time.Time
-	Lanes                []agent.Lane
-	Claims               [][2]string // lane, job: from the claim files when the agent isn't live
-	Missing              int         // requirements missing (only looked at when not active)
+	Lanes                []agent.Lane // the open lanes (a closed one is no lane now)
+	Pending              []string     // config keys changed that apply at the next start
+	Claims               [][2]string  // lane, job: from the claim files when the agent isn't live
+	Missing              int          // requirements missing (only looked at when not active)
 	Alerts               []agent.Alert
 	Disk                 agent.Disk
 	Log                  []string
@@ -91,7 +92,12 @@ func gather(t *ui.T, p *conf.Project) *statusInfo {
 	s.Alerts = alertsOf(p, s.State)
 	s.Plan, s.PlanErr = agent.PlanFor(p, time.Now())
 	if st, err := agent.ReadState(p); err == nil && st.Live() {
-		s.Live, s.Note, s.Lanes = true, st.Note, st.Lanes
+		s.Live, s.Note, s.Pending = true, st.Note, st.Pending
+		for _, l := range st.Lanes {
+			if !l.Off {
+				s.Lanes = append(s.Lanes, l)
+			}
+		}
 		if st.Schedule != nil && s.PlanErr == nil {
 			s.Plan = st.Schedule // as the agent sees it
 		}
@@ -153,7 +159,13 @@ func (s *statusInfo) renderPlain(t *ui.T, now time.Time) {
 			if l.Progress != "" {
 				pr += " " + l.Progress
 			}
+			if l.Draining {
+				pr += " (draining: the lane closes after this job)"
+			}
 			t.Printf("lane %d: %s for %s, renewed %s%s\n", l.Slot, l.ID, ui.Dur(now.Sub(l.Started)), ui.Ago(l.Renewed, now), pr)
+		}
+		if len(s.Pending) > 0 {
+			t.Printf("config: %s changed, applies when the service starts again (%s)\n", strings.Join(s.Pending, ", "), s.restartCmd())
 		}
 	}
 	for _, c := range s.Claims {
@@ -176,6 +188,10 @@ func (s *statusInfo) renderPlain(t *ui.T, now time.Time) {
 	for _, l := range s.Log {
 		t.Println(l)
 	}
+}
+
+func (s *statusInfo) restartCmd() string {
+	return "sat " + s.Name + " stop && sat " + s.Name + " start"
 }
 
 // serviceWord: active -> running, inactive -> stopped.
@@ -206,6 +222,9 @@ func (s *statusInfo) renderStyled(t *ui.T, now time.Time) {
 	if s.Drain {
 		head += t.Muted(" · ") + t.Badge("draining")
 	}
+	if len(s.Pending) > 0 {
+		head += t.Muted(" · ") + t.Warn("restart to apply")
+	}
 	t.Println(head)
 	var rows [][]string
 	switch s.hubState() {
@@ -221,6 +240,9 @@ func (s *statusInfo) renderStyled(t *ui.T, now time.Time) {
 	}
 	if s.Note != "" {
 		rows = append(rows, []string{t.Muted("agent"), t.Warn(s.Note)})
+	}
+	if len(s.Pending) > 0 {
+		rows = append(rows, []string{t.Muted("config"), t.Warn(strings.Join(s.Pending, ", ")+" changed: applies when the service starts again") + t.Muted(": "+s.restartCmd())})
 	}
 	if s.PlanErr != nil {
 		rows = append(rows, []string{t.Muted("drain"), t.Warn(s.PlanErr.Error())})
@@ -275,6 +297,9 @@ func (s *statusInfo) laneRows(t *ui.T, now time.Time) [][]string {
 			if l.Progress != "" {
 				v += "  " + l.Progress
 			}
+			if l.Draining {
+				v += "  " + t.Warn("draining: closes after this job")
+			}
 			rows = append(rows, []string{k, v})
 		case l.Waiting == "hub":
 			rows = append(rows, []string{k, t.Warn("waiting for the hub")})
@@ -306,14 +331,20 @@ func (s *statusInfo) render(t *ui.T, now time.Time) {
 func overview(t *ui.T, ss []*statusInfo) {
 	var rows [][]string
 	for _, s := range ss {
-		busy := 0
+		busy, draining := 0, 0
 		for _, l := range s.Lanes {
 			if l.ID != "" {
 				busy++
 			}
+			if l.Draining {
+				draining++
+			}
 		}
 		busy += len(s.Claims)
 		lanes := fmt.Sprintf("%d of %d busy", busy, max(len(s.Lanes), len(s.Claims)))
+		if draining > 0 {
+			lanes += fmt.Sprintf(" (%d draining)", draining)
+		}
 		if !s.Live && len(s.Claims) == 0 {
 			lanes = "-"
 		}
@@ -324,7 +355,11 @@ func overview(t *ui.T, ss []*statusInfo) {
 		case hubDown:
 			hub = t.Bad("unreachable")
 		}
-		rows = append(rows, []string{t.Dot(s.State) + t.Bold(s.Name), t.Badge(serviceWord(s.State)), t.Badge(autostartWord(s.Enabled)), hub, lanes})
+		name := t.Dot(s.State) + t.Bold(s.Name)
+		if len(s.Pending) > 0 {
+			name += " " + t.Warn("(restart to apply)")
+		}
+		rows = append(rows, []string{name, t.Badge(serviceWord(s.State)), t.Badge(autostartWord(s.Enabled)), hub, lanes})
 	}
 	t.Print(t.Table("", []string{"  PROJECT", "SERVICE", "AUTOSTART", "HUB", "LANES"}, rows))
 	t.Println()

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,7 +63,16 @@ type Agent struct {
 	adopt   map[int]*Job  // per lane: the job a previous agent left running
 	noClaim bool          // adopted jobs only (requirements missing): take no new ones
 	wake    awake         // the sleep inhibitor, held while a lane runs a job (awake.go)
-	proto   struct {
+	// live configuration (live.go)
+	wg       sync.WaitGroup    // the lanes; setSlots adds to it
+	want     int               // SLOTS as last read: the lanes wanted open
+	retire   map[int]bool      // lanes closing: an idle one closes at once, a busy one after its job
+	off      map[int]bool      // closed lanes (kept in st.Lanes, as lanes are indexed by slot)
+	cfg      map[string]string // the project's config as last read
+	startCfg map[string]string // and as it was at the start (restart-only keys are compared with it)
+	cfgMod   time.Time         // its mtime then
+	pending  []string          // restart-only keys changed since the start
+	proto    struct {
 		gen uint64
 		at  time.Time
 		ok  bool
@@ -173,17 +183,6 @@ func (a *Agent) beginHandoff(why string) {
 	}
 }
 
-// nap sleeps d, waking early for a drain, a restart or the end.
-func (a *Agent) nap(ctx context.Context, d time.Duration) {
-	end := time.Now().Add(d)
-	for time.Now().Before(end) && !a.stopping() && ctx.Err() == nil {
-		select {
-		case <-ctx.Done():
-		case <-time.After(min(time.Until(end), 250*time.Millisecond)):
-		}
-	}
-}
-
 func (a *Agent) contact(err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -256,13 +255,18 @@ func (a *Agent) setLane(i int, f func(*Lane)) {
 	a.wake.set(n > 0, a.keepAwake(), fmt.Sprintf("sat %s: %d job(s) running", a.P.Name, n), a.Logf)
 }
 
-// keepAwake: KEEP_AWAKE is not "off" (the project's config, else ~/.sat/config).
-func (a *Agent) keepAwake() bool { return a.P.Get("KEEP_AWAKE", "on") != "off" }
+// keepAwake: KEEP_AWAKE is not "off" (the project's config as last read, else ~/.sat/config).
+func (a *Agent) keepAwake() bool { return a.get("KEEP_AWAKE", "on") != "off" }
 
 func (a *Agent) writeState(running bool) {
 	a.mu.Lock()
 	s := a.st
 	s.Lanes = append([]Lane(nil), a.st.Lanes...)
+	for i := range s.Lanes {
+		s.Lanes[i].Draining = a.retire[i] && s.Lanes[i].ID != ""
+		s.Lanes[i].Off = a.off[i]
+	}
+	s.Slots, s.Pending = a.want, append([]string(nil), a.pending...)
 	a.mu.Unlock()
 	s.Updated, s.Running, s.Draining = time.Now(), running, a.draining()
 	for i := range s.Lanes {
@@ -383,8 +387,16 @@ func (a *Agent) Run(ctx context.Context) error {
 			alive++
 		}
 	}
+	a.want, a.retire, a.off = slots, map[int]bool{}, map[int]bool{}
+	a.cfg, a.startCfg = maps.Clone(p.Conf), maps.Clone(p.Conf)
+	if fi, err := os.Stat(a.configPath()); err == nil {
+		a.cfgMod = fi.ModTime()
+	}
 	for i := range lanes {
 		a.st.Lanes = append(a.st.Lanes, Lane{Slot: i + 1, Percent: -1})
+		if i >= slots {
+			a.retire[i] = true // past SLOTS: closes once its adopted job (if any) is done
+		}
 	}
 	if n := restartNote(h, a.Version, alive); n != "" {
 		a.st.Restart, a.st.RestartAt = n, time.Now()
@@ -418,12 +430,11 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.checkSchedule(time.Now())
 	a.writeState(true)
 
-	var wg sync.WaitGroup
 	for i := range lanes {
-		wg.Go(func() { a.lane(ctx, i, i < slots) })
+		a.wg.Go(func() { a.lane(ctx, i) })
 	}
 	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
+	go func() { a.wg.Wait(); close(done) }()
 	st := time.NewTicker(a.IV.State)
 	defer st.Stop()
 	lastBundle, lastSync, lastUpd := time.Now(), time.Now(), time.Time{}
@@ -455,6 +466,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			return nil
 		case <-st.C:
 			a.checkSchedule(time.Now())
+			a.reload(ctx)
 			a.writeState(true)
 			if time.Since(lastBundle) >= a.IV.Bundle {
 				lastBundle = time.Now()
@@ -485,26 +497,31 @@ func (a *Agent) Run(ctx context.Context) error {
 
 // lane: first the job a previous agent left on it, if any, then claims (claim false: a lane past
 // SLOTS, which only finishes that job).
-func (a *Agent) lane(ctx context.Context, i int, claim bool) {
+// lane: lane i claims and runs jobs until the agent stops or the lane is retired (live.go).
+func (a *Agent) lane(ctx context.Context, i int) {
 	slot := i + 1
-	if j := a.adopt[slot]; j != nil {
+	a.mu.Lock()
+	j := a.adopt[slot]
+	delete(a.adopt, slot) // a lane opened again later has nothing to adopt
+	a.mu.Unlock()
+	if j != nil {
 		a.resume(ctx, i, j)
 	}
-	if !claim {
-		return
-	}
 	for !a.stopping() && ctx.Err() == nil {
+		if a.leave(i) {
+			return
+		}
 		if !a.ready(i) {
-			a.nap(ctx, a.IV.Unreach)
+			a.laneNap(ctx, i, a.IV.Unreach)
 			continue
 		}
 		if !a.roomy(i) {
-			a.nap(ctx, a.IV.Disk)
+			a.laneNap(ctx, i, a.IV.Disk)
 			continue
 		}
 		if !a.protocolOK(ctx) {
 			a.setLane(i, func(l *Lane) { l.Waiting = "hub" })
-			a.nap(ctx, a.IV.Unreach)
+			a.laneNap(ctx, i, a.IV.Unreach)
 			continue
 		}
 		if a.checkSchedule(time.Now()); a.stopping() {
@@ -515,14 +532,14 @@ func (a *Agent) lane(ctx context.Context, i int, claim bool) {
 			if ctx.Err() == nil {
 				a.Logf("[%d] hub unreachable: %v", slot, errOr(err, rc))
 				a.setLane(i, func(l *Lane) { l.Waiting = "hub" })
-				a.nap(ctx, a.IV.Unreach)
+				a.laneNap(ctx, i, a.IV.Unreach)
 			}
 			continue
 		}
 		line = strings.TrimSpace(line)
 		if line == "" {
 			a.setLane(i, func(l *Lane) { l.Waiting = "" })
-			a.nap(ctx, a.IV.Poll)
+			a.laneNap(ctx, i, a.IV.Poll)
 			continue
 		}
 		a.run(ctx, i, line)

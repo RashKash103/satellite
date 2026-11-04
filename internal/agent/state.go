@@ -34,7 +34,9 @@ type State struct {
 	Note        string    `json:"note,omitempty"`    // why the agent isn't claiming, when it isn't
 	Restart     string    `json:"restart,omitempty"` // "updated from A to B, adopted N running jobs"
 	RestartAt   time.Time `json:"restart_at,omitzero"`
-	Lanes       []Lane    `json:"lanes"`
+	Lanes       []Lane    `json:"lanes"`             // by slot: Lanes[i] is lane i+1, open or closed (Off)
+	Slots       int       `json:"slots"`             // SLOTS as last read: the lanes wanted open
+	Pending     []string  `json:"pending,omitempty"` // config keys changed that apply at the next start
 	Alerts      []Alert   `json:"alerts,omitempty"`
 	Schedule    *Plan     `json:"schedule,omitempty"` // the drain schedule, and when it drains next
 }
@@ -48,6 +50,8 @@ type Lane struct {
 	Progress string    `json:"progress,omitempty"`
 	Percent  int       `json:"percent"` // -1: none given
 	Waiting  string    `json:"waiting,omitempty"`
+	Draining bool      `json:"draining,omitempty"` // SLOTS went down: finishing its job, then the lane closes
+	Off      bool      `json:"off,omitempty"`      // closed (SLOTS went down): not a lane now
 }
 
 func StatePath(p *conf.Project) string { return filepath.Join(p.State, "agent.json") }

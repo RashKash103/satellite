@@ -34,6 +34,8 @@ var helps = []cmdHelp{
 	{name: "selftest", short: "the project's own check of this node (its sat/selftest)"},
 	{name: "env", args: "[KEY=VALUE | -KEY]", short: "list, set or unset the project's env file",
 		long: "Every job and project script sources it (with shell semantics) when it starts, so\na change applies from the next job."},
+	{name: "config", args: "[KEY=VALUE | -KEY]", short: "list, set or unset a key of the project's config",
+		long: "A running service applies a change within seconds: SLOTS opens lanes, or closes them\n(idle ones at once, a busy one after its job). HUB, HUB_IP, HUB_PORT, HUB_USER,\nSAT_NAME and TRANSPORT apply when the service starts again (sat PROJECT stop && start)."},
 	{name: "update", short: "refresh the bundle from the hub, check, rerun the project's sat/setup"},
 	{name: "views", short: "the project's views: name, title, scope, mode, format"},
 	{name: "view", args: "NAME [--lane N] [-w]", short: "show one of the project's views; -w keeps it live",

@@ -137,6 +137,7 @@ starts on Cancel: `enter` alone does nothing.
 | `autostart on\|off` | start at boot, or not (off by default) |
 | `selftest` | the project's own check of this node |
 | `env [KEY=VALUE \| -KEY]` | list, set or unset the project's `env` (below); applies from the next job |
+| `config [KEY=VALUE \| -KEY]` | list, set or unset a key of the project's config; a running service applies it within seconds ([below](#changing-the-config-while-it-runs)) |
 | `update` | refresh the bundle from the hub; check, then rerun the project's setup |
 
 and for the node as a whole:
@@ -194,14 +195,15 @@ avoids throwing away work in progress.
 
 ## Node config
 
-`~/.sat/projects/PROJECT/config` is read at each start and sourced by each job:
+`~/.sat/projects/PROJECT/config` is sourced by each job, and a running service re-reads it within
+seconds of a change ([below](#changing-the-config-while-it-runs)):
 
 | key | |
 |---|---|
 | `HUB` | the SSH alias for the hub (written by `sat setup`); jobs use it for git and rsync |
 | `HUB_IP`, `HUB_USER` | where the hub is; `HUB_PORT` if its sshd isn't on 22 |
 | `SAT_NAME` | this node's name in leases and results: the short hostname. It is bound to the node's key on the hub, so change it in both places, or rerun `sat setup` after renaming the machine. |
-| `SLOTS` | lanes: jobs run at the same time (default 1; the project's defaults may set it) |
+| `SLOTS` | lanes: jobs run at the same time (default 1; the project's defaults may set it). Applies live: see below |
 | `MIN_FREE_GB`, `MIN_FREE_PCT` | the node keeps the larger of these free on the disk under the project's directory (defaults 20 GB and 10 %) |
 | `MAX_GB` | caps this project's directory (default 0: no cap; a project's defaults may set one) |
 | `STALL_MIN` | minutes without new output from a lane's job before it is an [alert](#alerts) (default 30; 0: never) |
@@ -223,8 +225,23 @@ in `~/.sat/config`, for every project on the node, along with:
 and project script, so its lines keep their shell meaning: `export TOOL_HOME="$HOME/.tool-b"`,
 `PATH=$HOME/opt/bin:$PATH`. Edit it or use `sat PROJECT env`; a change applies from the next job.
 
-Change the rest of the config, then `sat PROJECT stop && sat PROJECT start` (the disk settings apply
-at once).
+### Changing the config while it runs
+
+`sat PROJECT config` lists the config; `sat PROJECT config KEY=VALUE` sets a key and
+`sat PROJECT config -KEY` removes one (or edit the file: `E` in the live view). A running service
+notices the change within seconds and applies it:
+
+- **`SLOTS` up:** a lane that was closing stays open, then closed lanes open again, then new ones,
+  and each takes jobs at once.
+- **`SLOTS` down:** idle lanes close first, highest first; then, if it must, the highest busy lanes
+  drain: each finishes its job, claims nothing more, and closes. Exactly as many as the decrease:
+  `SLOTS` 3 to 2 with every lane busy drains one. `sat status` and the live view mark a draining
+  lane ("draining"), count it ("2 (1 draining)"), and stop listing a lane once it has closed.
+- **`HUB`, `HUB_IP`, `HUB_PORT`, `HUB_USER`, `SAT_NAME`, `TRANSPORT`** shape the connection to the
+  hub, so they apply when the service starts again: until then `sat status` says "restart to
+  apply" and which keys, and the live view marks the project `restart!` in its list.
+- **Everything else** applies at once: the disk settings, `STALL_MIN`, `JOB_WARN_MIN`, `KEEP_AWAKE`,
+  and the project's own keys from the next job on (jobs source the config when they start).
 
 ### Disk space
 

@@ -244,6 +244,9 @@ func (m *model) lanes() []int {
 	f := strings.ToLower(m.filter[paneLanes])
 	var r []int
 	for s := 1; s <= p.slots; s++ {
+		if p.st.Live() && s <= len(p.st.Lanes) && p.st.Lanes[s-1].Off {
+			continue // closed: SLOTS went down
+		}
 		if f == "" || strings.Contains(strings.ToLower(ui.Strip(m.laneText(p, s, 200))), f) {
 			r = append(r, s)
 		}
