@@ -61,6 +61,7 @@ type Agent struct {
 	handoff chan struct{} // closed when the agent hands its running jobs to its next binary
 	adopt   map[int]*Job  // per lane: the job a previous agent left running
 	noClaim bool          // adopted jobs only (requirements missing): take no new ones
+	wake    awake         // the sleep inhibitor, held while a lane runs a job (awake.go)
 	proto   struct {
 		gen uint64
 		at  time.Time
@@ -245,8 +246,18 @@ func (a *Agent) protocolOK(ctx context.Context) bool {
 func (a *Agent) setLane(i int, f func(*Lane)) {
 	a.mu.Lock()
 	f(&a.st.Lanes[i])
+	n := 0
+	for _, l := range a.st.Lanes {
+		if l.ID != "" {
+			n++
+		}
+	}
 	a.mu.Unlock()
+	a.wake.set(n > 0, a.keepAwake(), fmt.Sprintf("sat %s: %d job(s) running", a.P.Name, n), a.Logf)
 }
+
+// keepAwake: KEEP_AWAKE is not "off" (the project's config, else ~/.sat/config).
+func (a *Agent) keepAwake() bool { return a.P.Get("KEEP_AWAKE", "on") != "off" }
 
 func (a *Agent) writeState(running bool) {
 	a.mu.Lock()
@@ -349,6 +360,7 @@ func (a *Agent) runScript(ctx context.Context, name string) {
 // Run is the service. It returns nil after a drain, ErrRestart for an update.
 func (a *Agent) Run(ctx context.Context) error {
 	p := a.P
+	defer a.wake.set(false, false, "", a.Logf)
 	os.MkdirAll(p.State, 0o755)
 	a.name, a.env = p.NodeName(), Env(p)
 	slots, _ := strconv.Atoi(p.Get("SLOTS", "1"))

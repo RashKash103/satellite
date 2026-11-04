@@ -36,6 +36,8 @@ for it.
   every day: it stops taking jobs once a typical one (the p80 of its recent jobs) would no longer
   finish in time. `start 18:00` drains from a time instead; once or daily, set from the command
   line or the live view (`D`), and kept by the service itself.
+- **Awake while working.** While any lane runs a job, the node holds a logind inhibitor, so it does
+  not suspend mid-job (`KEEP_AWAKE=off` lets it sleep); the lock goes with the last job.
 - **Views and alerts.** A project can bring its own views of its work (a queue, a lane's steps,
   charts), shown by `sat PROJECT view NAME` and as tabs in the live view. The node raises alerts
   when a lane stalls, the hub goes quiet or the disk fills, and can send a desktop notification.

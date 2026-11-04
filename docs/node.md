@@ -206,6 +206,7 @@ avoids throwing away work in progress.
 | `MAX_GB` | caps this project's directory (default 0: no cap; a project's defaults may set one) |
 | `STALL_MIN` | minutes without new output from a lane's job before it is an [alert](#alerts) (default 30; 0: never) |
 | `JOB_WARN_MIN` | minutes a job may run before it is an alert (default: no limit) |
+| `KEEP_AWAKE` | `off`: let the machine sleep while jobs run. By default the agent holds a logind inhibitor (`systemd-inhibit`) while any lane runs a job, so the machine does not suspend mid-job; desktops such as KDE Plasma and GNOME show it as what keeps the machine awake. Blocking sleep needs a login session: on a node nobody is logged in to, it blocks idle only, which still stops suspending for idleness. The lock goes with the last job, or with the agent |
 | `JOB_EST_MIN` | minutes a job is taken to last by an end-anchored [drain schedule](#scheduled-drains) before this node has finished any (default 30) |
 | `TRANSPORT` | `native` (default): `sat` holds one SSH connection to the hub open; `exec`: it runs the system `ssh` with the alias for each call, as the bash node did (setup picks this when only the system ssh gets through, say through a jump host) |
 
