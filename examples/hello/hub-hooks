@@ -11,7 +11,9 @@ mkdir -p "$D"/{queue,running,done,failed}
 cmd=$1; shift
 case "$cmd" in
 claim)   # HOST SLOT: the oldest queued job (sat-hub holds a lock around claims)
-  id=$(ls -tr "$D/queue" | head -1); [ -n "$id" ] || exit 0
+  # Oldest first, ties by name: requeue stamps 2000-01-01, and how ls orders equal times differs
+  # between coreutils builds (GNU by name, others not), so say it here.
+  id=$(find "$D/queue" -maxdepth 1 -type f ! -name '.*' -printf '%T@ %f\n' | sort -k1,1n -k2,2 | head -1 | cut -d' ' -f2); [ -n "$id" ] || exit 0
   mv "$D/queue/$id" "$D/running/$id" && echo "$id" ;;
 ok)      # HOST ID WORDS...: the job's result words
   host=$1 id=$2; shift 2; name_ok "$id" && [ -f "$D/running/$id" ] || exit 2
