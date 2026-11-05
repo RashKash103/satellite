@@ -71,6 +71,7 @@ type Agent struct {
 	cfg      map[string]string // the project's config as last read
 	startCfg map[string]string // and as it was at the start (restart-only keys are compared with it)
 	cfgMod   time.Time         // its mtime then
+	cfgGen   uint64            // bumped when a live setting changes: napping lanes look again (laneNap)
 	pending  []string          // restart-only keys changed since the start
 	proto    struct {
 		gen uint64

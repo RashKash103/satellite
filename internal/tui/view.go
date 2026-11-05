@@ -725,7 +725,7 @@ func (m *model) layout(t styles, w, h int) layout {
 	l.ph = min(max(len(m.ps), 1)+2, max(h/3, 4))
 	lanes := 1
 	if p := m.cur(); p != nil {
-		lanes = p.slots
+		lanes = p.open() // the box fits the open lanes: it shrinks when SLOTS goes down live
 	}
 	lmin := min(lanes, 4) + 2
 	avail := h - l.ph - lmin

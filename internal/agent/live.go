@@ -138,8 +138,11 @@ func (a *Agent) reload(ctx context.Context) {
 	_, pending := confDiff(a.startCfg, m)
 	was := a.pending
 	a.pending = pending
-	a.mu.Unlock()
 	live, _ := confDiff(old, m)
+	if len(live) > 0 {
+		a.cfgGen++ // a lane waiting on disk room, say, checks again at once with the new values
+	}
+	a.mu.Unlock()
 	if len(live) > 0 {
 		a.Logf("config changed: %s (applied now)", strings.Join(live, ", "))
 	}
@@ -213,16 +216,24 @@ func (a *Agent) leave(i int) bool {
 	return true
 }
 
+func (a *Agent) configGen() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfgGen
+}
+
 func (a *Agent) retiring(i int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.retire[i]
 }
 
-// laneNap: nap, waking early when lane i is retired.
+// laneNap: nap, waking early when lane i is retired or a live setting changes (MAX_GB raised while
+// the lane waits for disk room: it looks again now, not at the end of its nap).
 func (a *Agent) laneNap(ctx context.Context, i int, d time.Duration) {
 	end := time.Now().Add(d)
-	for time.Now().Before(end) && !a.stopping() && !a.retiring(i) && ctx.Err() == nil {
+	gen := a.configGen()
+	for time.Now().Before(end) && !a.stopping() && !a.retiring(i) && a.configGen() == gen && ctx.Err() == nil {
 		select {
 		case <-ctx.Done():
 		case <-time.After(min(time.Until(end), 250*time.Millisecond)):

@@ -235,6 +235,17 @@ func (m *model) cur() *proj {
 	return nil
 }
 
+// open: how many of the project's lanes are open (closed ones, SLOTS lowered live, are not shown).
+func (x *proj) open() int {
+	n := 0
+	for s := 1; s <= x.slots; s++ {
+		if !(x.st.Live() && s <= len(x.st.Lanes) && x.st.Lanes[s-1].Off) {
+			n++
+		}
+	}
+	return max(n, 1)
+}
+
 // lanes: the selected project's lane numbers that pass the filter.
 func (m *model) lanes() []int {
 	p := m.cur()

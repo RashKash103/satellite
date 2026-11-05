@@ -1,9 +1,13 @@
 package agent
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 )
 
 // lanes builds lane states from a pattern: B busy, I idle, D busy and retiring (draining), C closed.
@@ -74,5 +78,39 @@ func TestConfDiff(t *testing.T) {
 	}
 	if l, r := confDiff(old, old); l != nil || r != nil {
 		t.Errorf("no change: %v %v", l, r)
+	}
+}
+
+// A lane napping (waiting for disk room, say) wakes when a live setting changes, not at the end of
+// its nap: MAX_GB raised, it looks again at once.
+func TestLaneNapWakesOnConfigChange(t *testing.T) {
+	p := testProject(t, "MAX_GB=10\n") // no SLOTS: a bare Agent has no hub to open a lane on
+	a := &Agent{P: p}
+	ctx := context.Background()
+	a.reload(ctx)
+	woke := make(chan time.Duration, 1)
+	go func() { t0 := time.Now(); a.laneNap(ctx, 0, 30*time.Second); woke <- time.Since(t0) }()
+	time.Sleep(300 * time.Millisecond)
+	cfg := filepath.Join(p.Base, "config")
+	if err := os.WriteFile(cfg, []byte("MAX_GB=20\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(2 * time.Second)
+	os.Chtimes(cfg, later, later) // a new mtime even on a coarse clock
+	a.reload(ctx)
+	select {
+	case d := <-woke:
+		if d > 5*time.Second {
+			t.Fatalf("woke after %v", d)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the nap did not end when MAX_GB changed")
+	}
+	// An unchanged file wakes nothing.
+	go func() { t0 := time.Now(); a.laneNap(ctx, 0, 700*time.Millisecond); woke <- time.Since(t0) }()
+	time.Sleep(100 * time.Millisecond)
+	a.reload(ctx)
+	if d := <-woke; d < 600*time.Millisecond {
+		t.Fatalf("an unchanged config ended the nap after %v", d)
 	}
 }
